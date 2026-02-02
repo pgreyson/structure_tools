@@ -22,6 +22,17 @@ import os
 import threading
 import time
 import signal
+import numpy as np
+
+# Syphon for video output
+try:
+    import syphon
+    from syphon.utils.numpy import copy_image_to_mtl_texture
+    from syphon.utils.raw import create_mtl_texture
+    SYPHON_AVAILABLE = True
+except ImportError:
+    SYPHON_AVAILABLE = False
+    print("Warning: syphon-python not installed. Run: pip install syphon-python")
 
 # Configuration
 SEGMENT_DIR = "/Volumes/Workspace/Downloads/3d_rarities_output"
@@ -30,114 +41,115 @@ FFMPEG = "/opt/homebrew/bin/ffmpeg"
 FFPROBE = "/opt/homebrew/bin/ffprobe"
 STRUCTURE_SD = "/Volumes/STRUCT_SD/clips"
 
-# Viture glasses: 3840x1080 (two 1920x1080 panels side-by-side)
-VITURE_WIDTH = 3840
-VITURE_HEIGHT = 1080
-VITURE_EYE_WIDTH = 1920  # Each eye panel
+# Syphon output: 3840x1080 (side-by-side stereo for Viture glasses)
+SYPHON_WIDTH = 3840
+SYPHON_HEIGHT = 1080
+EYE_WIDTH = 1920  # Each eye panel
 
 
-class VitureDisplay:
-    """Manages mirroring to Viture stereo glasses (3840x1080 side-by-side)"""
+class SyphonOutput:
+    """Sends stereo frames to Syphon for display by external client (non-blocking)"""
 
-    def __init__(self, parent):
-        self.parent = parent
-        self.window = None
-        self.canvas = None
-        self.photo = None
+    def __init__(self):
+        self.server = None
+        self.texture = None
         self.enabled = False
-        self.display_x = None  # X position of Viture display
-
-    def find_viture_display(self):
-        """Find Viture display position using system_profiler"""
-        try:
-            result = subprocess.run(
-                ["system_profiler", "SPDisplaysDataType"],
-                capture_output=True, text=True
-            )
-            # Look for VITURE in the output - it's typically to the right of main display
-            if "VITURE" in result.stdout:
-                # Main display is typically 1920 wide (UI scale), Viture starts after
-                # This is a simplification - could parse more carefully
-                return 1920  # Assume Viture is to the right of main display
-        except:
-            pass
-        return None
+        self._pending_frame = None
+        self._lock = threading.Lock()
+        self._thread = None
+        self._running = False
 
     def toggle(self):
-        """Toggle Viture mirroring on/off"""
+        """Toggle Syphon output on/off"""
         if self.enabled:
             self.disable()
         else:
             self.enable()
 
     def enable(self):
-        """Enable Viture mirroring"""
-        self.display_x = self.find_viture_display()
-        if self.display_x is None:
-            print("Viture display not found")
+        """Start Syphon server"""
+        if not SYPHON_AVAILABLE:
+            print("Syphon not available")
             return False
 
-        self.window = tk.Toplevel(self.parent)
-        self.window.title("Viture Mirror")
-        self.window.geometry(f"{VITURE_WIDTH}x{VITURE_HEIGHT}+{self.display_x}+0")
-        self.window.configure(bg="black")
-        self.window.attributes("-fullscreen", True)
-
-        # Hide cursor on mirror display
-        self.window.config(cursor="none")
-
-        self.canvas = tk.Canvas(self.window, bg="black", highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-
-        # Escape to close mirror
-        self.window.bind("<Escape>", lambda e: self.disable())
-
-        self.enabled = True
-        print(f"Viture mirroring enabled at x={self.display_x}")
-        return True
+        try:
+            self.server = syphon.SyphonMetalServer("Structure Exporter")
+            self.texture = create_mtl_texture(self.server.device, SYPHON_WIDTH, SYPHON_HEIGHT)
+            self.enabled = True
+            self._running = True
+            self._thread = threading.Thread(target=self._worker, daemon=True)
+            self._thread.start()
+            print("Syphon server started: 'Structure Exporter'")
+            return True
+        except Exception as e:
+            print(f"Error starting Syphon: {e}")
+            return False
 
     def disable(self):
-        """Disable Viture mirroring"""
-        if self.window:
-            self.window.destroy()
-            self.window = None
-            self.canvas = None
-            self.photo = None
+        """Stop Syphon server"""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1)
+            self._thread = None
+        if self.server:
+            try:
+                self.server.stop()
+            except:
+                pass
+            self.server = None
+            self.texture = None
         self.enabled = False
-        print("Viture mirroring disabled")
+        print("Syphon server stopped")
 
-    def show_frame(self, frame_bgr):
-        """Display frame on Viture as side-by-side stereo with letterboxing"""
-        if not self.enabled or not self.canvas:
+    def send_frame(self, frame_bgr):
+        """Queue frame for Syphon (non-blocking)"""
+        if not self.enabled:
             return
+        with self._lock:
+            self._pending_frame = frame_bgr.copy()
 
-        h, w = frame_bgr.shape[:2]
+    def _worker(self):
+        """Background thread that processes and sends frames"""
+        while self._running and self.server:
+            frame = None
+            with self._lock:
+                if self._pending_frame is not None:
+                    frame = self._pending_frame
+                    self._pending_frame = None
 
-        # Calculate letterboxed size for 16:9 (1920x1080) per eye
-        target_w, target_h = VITURE_EYE_WIDTH, VITURE_HEIGHT
-        scale = min(target_w / w, target_h / h)
-        new_w, new_h = int(w * scale), int(h * scale)
+            if frame is not None:
+                self._process_and_send(frame)
+            else:
+                time.sleep(0.005)  # 5ms idle sleep
 
-        # Resize frame
-        resized = cv2.resize(frame_bgr, (new_w, new_h))
-        resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    def _process_and_send(self, frame_bgr):
+        """Process and send frame to Syphon"""
+        try:
+            h, w = frame_bgr.shape[:2]
 
-        # Create letterboxed image for one eye (1920x1080)
-        eye_img = Image.new("RGB", (target_w, target_h), (0, 0, 0))
-        frame_pil = Image.fromarray(resized)
-        paste_x = (target_w - new_w) // 2
-        paste_y = (target_h - new_h) // 2
-        eye_img.paste(frame_pil, (paste_x, paste_y))
+            # Scale to fit 3840x1080 with letterboxing
+            scale = min(SYPHON_WIDTH / w, SYPHON_HEIGHT / h)
+            new_w, new_h = int(w * scale), int(h * scale)
 
-        # Create side-by-side stereo image (same image for both eyes)
-        stereo = Image.new("RGB", (VITURE_WIDTH, VITURE_HEIGHT), (0, 0, 0))
-        stereo.paste(eye_img, (0, 0))  # Left eye
-        stereo.paste(eye_img, (VITURE_EYE_WIDTH, 0))  # Right eye
+            # Resize and convert to RGB
+            resized = cv2.resize(frame_bgr, (new_w, new_h))
+            resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
 
-        self.photo = ImageTk.PhotoImage(stereo)
-        self.canvas.delete("all")
-        self.canvas.create_image(VITURE_WIDTH // 2, VITURE_HEIGHT // 2,
-                                 image=self.photo, anchor=tk.CENTER)
+            # Create output with letterboxing
+            output = np.zeros((SYPHON_HEIGHT, SYPHON_WIDTH, 4), dtype=np.uint8)
+            paste_x = (SYPHON_WIDTH - new_w) // 2
+            paste_y = (SYPHON_HEIGHT - new_h) // 2
+            output[paste_y:paste_y+new_h, paste_x:paste_x+new_w, :3] = resized
+            output[:, :, 3] = 255  # Alpha
+
+            # Flip vertically for Metal texture coordinates
+            output = np.flipud(output)
+
+            # Send to Syphon
+            copy_image_to_mtl_texture(output, self.texture)
+            self.server.publish_frame_texture(self.texture)
+        except Exception as e:
+            print(f"Syphon send error: {e}")
 
 
 class VideoPlayer:
@@ -281,8 +293,10 @@ class StructureExporter:
 
         self.current_segment = None
 
-        # Viture display for stereo glasses mirroring
-        self.viture = VitureDisplay(root)
+        # Syphon output for stereo glasses (starts automatically)
+        self.syphon = SyphonOutput()
+        self.syphon.enable()
+        self.player = None  # Will be set in setup_ui
 
         self.setup_ui()
         self.load_segments()
@@ -347,9 +361,6 @@ class StructureExporter:
         tk.Button(transport_frame, text="+1s >", command=lambda: self.step(24)).pack(side=tk.LEFT, padx=2)
         tk.Button(transport_frame, text="+10s >>", command=lambda: self.step(240)).pack(side=tk.LEFT, padx=2)
 
-        # Viture mirror toggle
-        self.viture_btn = tk.Button(transport_frame, text="VITURE", command=self.toggle_viture)
-        self.viture_btn.pack(side=tk.LEFT, padx=20)
 
         # In/Out points
         points_frame = ttk.Frame(main_frame)
@@ -403,6 +414,9 @@ class StructureExporter:
         # Initialize video player
         self.player = VideoPlayer(self.canvas, self.time_label, self.slider)
 
+        # Connect Syphon output to player
+        self.player.frame_callback = self.syphon.send_frame
+
         # Key bindings
         self.root.bind("<space>", lambda e: self.toggle_play())
         self.root.bind("<Left>", lambda e: self.step(-1))
@@ -415,8 +429,6 @@ class StructureExporter:
         self.root.bind("<S>", lambda e: self.take_screenshot())
         self.root.bind("<bracketleft>", lambda e: self.prev_segment())
         self.root.bind("<bracketright>", lambda e: self.next_segment())
-        self.root.bind("<v>", lambda e: self.toggle_viture())
-        self.root.bind("<V>", lambda e: self.toggle_viture())
 
     def load_segments(self):
         segments = []
@@ -522,16 +534,12 @@ class StructureExporter:
             self.player.play()
             self.play_btn.config(text="PAUSE")
 
-    def toggle_viture(self):
-        """Toggle Viture stereo glasses mirroring"""
-        self.viture.toggle()
-        if self.viture.enabled:
-            self.viture_btn.config(relief=tk.SUNKEN, bg="green")
-            # Enable frame callback for mirroring
-            self.player.frame_callback = self.viture.show_frame
+    def toggle_syphon(self):
+        """Toggle Syphon output for stereo glasses"""
+        self.syphon.toggle()
+        if self.syphon.enabled:
+            self.player.frame_callback = self.syphon.send_frame
         else:
-            self.viture_btn.config(relief=tk.RAISED, bg="SystemButtonFace")
-            # Disable frame callback
             self.player.frame_callback = None
 
     def set_in_point(self):
@@ -769,11 +777,13 @@ class StructureExporter:
                 self.slider.set(frame)
             except:
                 pass
+        elif action == "syphon":
+            self.toggle_syphon()
 
     def on_closing(self):
-        # Clean up Viture display
-        if self.viture.enabled:
-            self.viture.disable()
+        # Clean up Syphon output
+        if self.syphon.enabled:
+            self.syphon.disable()
         # Clean up PID file
         if os.path.exists(PID_FILE):
             os.remove(PID_FILE)
