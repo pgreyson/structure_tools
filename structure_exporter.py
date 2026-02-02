@@ -179,9 +179,12 @@ class VideoPlayer:
             return
         ret, frame = self.cap.read()
         if ret:
-            # Call frame callback for mirroring (with original BGR frame)
+            # Call frame callback for mirroring (with copy of BGR frame)
             if self.frame_callback:
-                self.frame_callback(frame)
+                try:
+                    self.frame_callback(frame.copy())
+                except Exception as e:
+                    print(f"Frame callback error: {e}")
 
             # Resize to fit canvas (maintain aspect ratio)
             h, w = frame.shape[:2]
@@ -284,8 +287,8 @@ class StructureExporter:
         self.setup_ui()
         self.load_segments()
 
-        # Connect frame callback for Viture mirroring
-        self.player.frame_callback = self.viture.show_frame
+        # Frame callback will be set when Viture is enabled
+        # (disabled by default to avoid any overhead)
 
     def setup_ui(self):
 
@@ -524,8 +527,12 @@ class StructureExporter:
         self.viture.toggle()
         if self.viture.enabled:
             self.viture_btn.config(relief=tk.SUNKEN, bg="green")
+            # Enable frame callback for mirroring
+            self.player.frame_callback = self.viture.show_frame
         else:
             self.viture_btn.config(relief=tk.RAISED, bg="SystemButtonFace")
+            # Disable frame callback
+            self.player.frame_callback = None
 
     def set_in_point(self):
         self.in_point = self.player.get_current_time()
