@@ -30,6 +30,115 @@ FFMPEG = "/opt/homebrew/bin/ffmpeg"
 FFPROBE = "/opt/homebrew/bin/ffprobe"
 STRUCTURE_SD = "/Volumes/STRUCT_SD/clips"
 
+# Viture glasses: 3840x1080 (two 1920x1080 panels side-by-side)
+VITURE_WIDTH = 3840
+VITURE_HEIGHT = 1080
+VITURE_EYE_WIDTH = 1920  # Each eye panel
+
+
+class VitureDisplay:
+    """Manages mirroring to Viture stereo glasses (3840x1080 side-by-side)"""
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.window = None
+        self.canvas = None
+        self.photo = None
+        self.enabled = False
+        self.display_x = None  # X position of Viture display
+
+    def find_viture_display(self):
+        """Find Viture display position using system_profiler"""
+        try:
+            result = subprocess.run(
+                ["system_profiler", "SPDisplaysDataType"],
+                capture_output=True, text=True
+            )
+            # Look for VITURE in the output - it's typically to the right of main display
+            if "VITURE" in result.stdout:
+                # Main display is typically 1920 wide (UI scale), Viture starts after
+                # This is a simplification - could parse more carefully
+                return 1920  # Assume Viture is to the right of main display
+        except:
+            pass
+        return None
+
+    def toggle(self):
+        """Toggle Viture mirroring on/off"""
+        if self.enabled:
+            self.disable()
+        else:
+            self.enable()
+
+    def enable(self):
+        """Enable Viture mirroring"""
+        self.display_x = self.find_viture_display()
+        if self.display_x is None:
+            print("Viture display not found")
+            return False
+
+        self.window = tk.Toplevel(self.parent)
+        self.window.title("Viture Mirror")
+        self.window.geometry(f"{VITURE_WIDTH}x{VITURE_HEIGHT}+{self.display_x}+0")
+        self.window.configure(bg="black")
+        self.window.attributes("-fullscreen", True)
+
+        # Hide cursor on mirror display
+        self.window.config(cursor="none")
+
+        self.canvas = tk.Canvas(self.window, bg="black", highlightthickness=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        # Escape to close mirror
+        self.window.bind("<Escape>", lambda e: self.disable())
+
+        self.enabled = True
+        print(f"Viture mirroring enabled at x={self.display_x}")
+        return True
+
+    def disable(self):
+        """Disable Viture mirroring"""
+        if self.window:
+            self.window.destroy()
+            self.window = None
+            self.canvas = None
+            self.photo = None
+        self.enabled = False
+        print("Viture mirroring disabled")
+
+    def show_frame(self, frame_bgr):
+        """Display frame on Viture as side-by-side stereo with letterboxing"""
+        if not self.enabled or not self.canvas:
+            return
+
+        h, w = frame_bgr.shape[:2]
+
+        # Calculate letterboxed size for 16:9 (1920x1080) per eye
+        target_w, target_h = VITURE_EYE_WIDTH, VITURE_HEIGHT
+        scale = min(target_w / w, target_h / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+
+        # Resize frame
+        resized = cv2.resize(frame_bgr, (new_w, new_h))
+        resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+
+        # Create letterboxed image for one eye (1920x1080)
+        eye_img = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+        frame_pil = Image.fromarray(resized)
+        paste_x = (target_w - new_w) // 2
+        paste_y = (target_h - new_h) // 2
+        eye_img.paste(frame_pil, (paste_x, paste_y))
+
+        # Create side-by-side stereo image (same image for both eyes)
+        stereo = Image.new("RGB", (VITURE_WIDTH, VITURE_HEIGHT), (0, 0, 0))
+        stereo.paste(eye_img, (0, 0))  # Left eye
+        stereo.paste(eye_img, (VITURE_EYE_WIDTH, 0))  # Right eye
+
+        self.photo = ImageTk.PhotoImage(stereo)
+        self.canvas.delete("all")
+        self.canvas.create_image(VITURE_WIDTH // 2, VITURE_HEIGHT // 2,
+                                 image=self.photo, anchor=tk.CENTER)
+
 
 class VideoPlayer:
     def __init__(self, canvas, time_label, slider):
@@ -43,6 +152,7 @@ class VideoPlayer:
         self.playing = False
         self.photo = None
         self.duration = 0
+        self.frame_callback = None  # Called with raw BGR frame for mirroring
         self._updating_slider = False  # Prevent slider callback during playback
 
     def load(self, path):
@@ -69,6 +179,10 @@ class VideoPlayer:
             return
         ret, frame = self.cap.read()
         if ret:
+            # Call frame callback for mirroring (with original BGR frame)
+            if self.frame_callback:
+                self.frame_callback(frame)
+
             # Resize to fit canvas (maintain aspect ratio)
             h, w = frame.shape[:2]
             canvas_w = self.canvas.winfo_width()
@@ -79,10 +193,10 @@ class VideoPlayer:
             scale = min(canvas_w / w, canvas_h / h)
             new_w, new_h = int(w * scale), int(h * scale)
 
-            frame = cv2.resize(frame, (new_w, new_h))
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            display_frame = cv2.resize(frame, (new_w, new_h))
+            display_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
 
-            img = Image.fromarray(frame)
+            img = Image.fromarray(display_frame)
             self.photo = ImageTk.PhotoImage(img)
 
             self.canvas.delete("all")
@@ -164,8 +278,14 @@ class StructureExporter:
 
         self.current_segment = None
 
+        # Viture display for stereo glasses mirroring
+        self.viture = VitureDisplay(root)
+
         self.setup_ui()
         self.load_segments()
+
+        # Connect frame callback for Viture mirroring
+        self.player.frame_callback = self.viture.show_frame
 
     def setup_ui(self):
 
@@ -223,6 +343,10 @@ class StructureExporter:
         tk.Button(transport_frame, text="+1f >", command=lambda: self.step(1)).pack(side=tk.LEFT, padx=2)
         tk.Button(transport_frame, text="+1s >", command=lambda: self.step(24)).pack(side=tk.LEFT, padx=2)
         tk.Button(transport_frame, text="+10s >>", command=lambda: self.step(240)).pack(side=tk.LEFT, padx=2)
+
+        # Viture mirror toggle
+        self.viture_btn = tk.Button(transport_frame, text="VITURE", command=self.toggle_viture)
+        self.viture_btn.pack(side=tk.LEFT, padx=20)
 
         # In/Out points
         points_frame = ttk.Frame(main_frame)
@@ -288,6 +412,8 @@ class StructureExporter:
         self.root.bind("<S>", lambda e: self.take_screenshot())
         self.root.bind("<bracketleft>", lambda e: self.prev_segment())
         self.root.bind("<bracketright>", lambda e: self.next_segment())
+        self.root.bind("<v>", lambda e: self.toggle_viture())
+        self.root.bind("<V>", lambda e: self.toggle_viture())
 
     def load_segments(self):
         segments = []
@@ -393,6 +519,14 @@ class StructureExporter:
             self.player.play()
             self.play_btn.config(text="PAUSE")
 
+    def toggle_viture(self):
+        """Toggle Viture stereo glasses mirroring"""
+        self.viture.toggle()
+        if self.viture.enabled:
+            self.viture_btn.config(relief=tk.SUNKEN, bg="green")
+        else:
+            self.viture_btn.config(relief=tk.RAISED, bg="SystemButtonFace")
+
     def set_in_point(self):
         self.in_point = self.player.get_current_time()
         self.update_point_labels()
@@ -487,6 +621,8 @@ class StructureExporter:
                     output_path
                 ]
 
+                print(f"IN: {self.in_point:.3f}s, OUT: {self.out_point:.3f}s, Duration: {clip_duration:.3f}s")
+                print(f"Export command: {' '.join(cmd)}")
                 result = subprocess.run(cmd, capture_output=True, text=True)
 
                 if result.returncode != 0:
@@ -628,6 +764,9 @@ class StructureExporter:
                 pass
 
     def on_closing(self):
+        # Clean up Viture display
+        if self.viture.enabled:
+            self.viture.disable()
         # Clean up PID file
         if os.path.exists(PID_FILE):
             os.remove(PID_FILE)
