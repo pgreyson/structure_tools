@@ -104,26 +104,42 @@ class SyphonOutput:
         print("Syphon server stopped")
 
     def send_frame(self, frame_bgr):
-        """Send frame directly to Syphon (called from decode thread)"""
+        """Send frame to Syphon with 16:9 letterboxing per eye"""
         if not self.enabled or not self.server:
             return
 
         try:
             h, w = frame_bgr.shape[:2]
+            eye_w = w // 2  # Width of each eye in source
 
-            # Recreate texture if size changed
-            if w != self._tex_width or h != self._tex_height:
-                self.texture = create_mtl_texture(self.server.device, w, h)
-                self._output_buffer = np.zeros((h, w, 4), dtype=np.uint8)
-                self._tex_width = w
-                self._tex_height = h
-                print(f"Syphon texture: {w}x{h}")
+            # Initialize texture at 3840x1080 for Viture (two 1920x1080 panels)
+            if self._tex_width != SYPHON_WIDTH:
+                self.texture = create_mtl_texture(self.server.device, SYPHON_WIDTH, SYPHON_HEIGHT)
+                self._output_buffer = np.zeros((SYPHON_HEIGHT, SYPHON_WIDTH, 4), dtype=np.uint8)
+                self._output_buffer[:, :, 3] = 255  # Alpha always 255
+                self._tex_width = SYPHON_WIDTH
+                self._tex_height = SYPHON_HEIGHT
+                print(f"Syphon texture: {SYPHON_WIDTH}x{SYPHON_HEIGHT}")
 
-            # Convert BGR to RGBA (in-place to pre-allocated buffer)
-            self._output_buffer[:, :, 0] = frame_bgr[:, :, 2]  # R
-            self._output_buffer[:, :, 1] = frame_bgr[:, :, 1]  # G
-            self._output_buffer[:, :, 2] = frame_bgr[:, :, 0]  # B
-            self._output_buffer[:, :, 3] = 255  # A
+            # Calculate letterbox position for each eye (center in 1920x1080)
+            pad_x = (EYE_WIDTH - eye_w) // 2
+            pad_y = (SYPHON_HEIGHT - h) // 2
+
+            # Clear buffer (black letterbox)
+            self._output_buffer[:, :, :3] = 0
+
+            # Left eye -> left panel (BGR to RGB)
+            left_eye = frame_bgr[:, :eye_w]
+            self._output_buffer[pad_y:pad_y+h, pad_x:pad_x+eye_w, 0] = left_eye[:, :, 2]
+            self._output_buffer[pad_y:pad_y+h, pad_x:pad_x+eye_w, 1] = left_eye[:, :, 1]
+            self._output_buffer[pad_y:pad_y+h, pad_x:pad_x+eye_w, 2] = left_eye[:, :, 0]
+
+            # Right eye -> right panel
+            right_eye = frame_bgr[:, eye_w:]
+            rx = EYE_WIDTH + pad_x
+            self._output_buffer[pad_y:pad_y+h, rx:rx+eye_w, 0] = right_eye[:, :, 2]
+            self._output_buffer[pad_y:pad_y+h, rx:rx+eye_w, 1] = right_eye[:, :, 1]
+            self._output_buffer[pad_y:pad_y+h, rx:rx+eye_w, 2] = right_eye[:, :, 0]
 
             # Flip and send
             flipped = np.ascontiguousarray(self._output_buffer[::-1])
@@ -151,6 +167,9 @@ class VideoPlayer:
         self._decode_thread = None
         self._decode_running = False
         self._last_frame_time = 0
+        # Scrub state
+        self._was_playing_before_scrub = False
+        self._scrub_timer = None
 
     def load(self, path):
         # Remember if we were playing
@@ -178,12 +197,14 @@ class VideoPlayer:
         if was_playing:
             self.play()
 
-    def seek(self, frame_num):
+    def seek(self, frame_num, scrubbing=False):
         if not self.cap:
             return
 
-        # Pause playback during seek (user can resume with play button)
+        # Pause playback during seek
         if self.playing:
+            if scrubbing:
+                self._was_playing_before_scrub = True
             self._decode_running = False
             self.playing = False
             if self._decode_thread and self._decode_thread.is_alive():
@@ -194,6 +215,12 @@ class VideoPlayer:
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
         self.current_frame = frame_num
         self.show_frame()
+
+    def scrub_ended(self):
+        """Called when scrubbing stops - restore playback if was playing"""
+        if self._was_playing_before_scrub:
+            self._was_playing_before_scrub = False
+            self.play()
 
     def show_frame(self, reset_position=True):
         """Show single frame (for scrubbing, not playback)"""
@@ -247,28 +274,31 @@ class VideoPlayer:
         next_frame_time = time.perf_counter()
 
         while self._decode_running and self.cap:
-            ret, frame = self.cap.read()
-            if ret:
-                self.current_frame += 1
-                if self.current_frame >= self.total_frames:
-                    self.current_frame = 0
-                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            try:
+                ret, frame = self.cap.read()
+                if ret:
+                    self.current_frame += 1
+                    if self.current_frame >= self.total_frames:
+                        self.current_frame = 0
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-                # Send to Syphon
-                if self.frame_callback:
-                    try:
+                    # Send to Syphon
+                    if self.frame_callback:
                         self.frame_callback(frame)
-                    except Exception as e:
-                        print(f"Frame callback error: {e}")
 
-            # Wait for next frame time (absolute timing, no drift)
-            next_frame_time += frame_duration
-            sleep_time = next_frame_time - time.perf_counter()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            elif sleep_time < -frame_duration:
-                # Too far behind, reset timing
-                next_frame_time = time.perf_counter()
+                # Wait for next frame time (absolute timing, no drift)
+                next_frame_time += frame_duration
+                sleep_time = next_frame_time - time.perf_counter()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                elif sleep_time < -frame_duration:
+                    # Too far behind, reset timing
+                    next_frame_time = time.perf_counter()
+            except Exception as e:
+                print(f"Decode loop error: {e}")
+                import traceback
+                traceback.print_exc()
+                break
 
     def _update_ui_loop(self):
         """Update UI elements (runs in main thread)"""
@@ -335,6 +365,13 @@ class StructureExporter:
         # Frame callback will be set when Viture is enabled
         # (disabled by default to avoid any overhead)
 
+    def make_button(self, parent, text, command, **kwargs):
+        """Create a button with tap feedback"""
+        btn = tk.Button(parent, text=text, command=command,
+                       activebackground="#4a90d9", activeforeground="white",
+                       **kwargs)
+        return btn
+
     def setup_ui(self):
 
         # Main container
@@ -346,8 +383,8 @@ class StructureExporter:
         top_frame.pack(fill=tk.X, pady=(0, 10))
 
         ttk.Label(top_frame, text="Segment:").pack(side=tk.LEFT)
-        self.prev_btn = tk.Button(top_frame, text=" < ", font=("Helvetica", 14, "bold"),
-                                   command=self.prev_segment)
+        self.prev_btn = self.make_button(top_frame, " < ", self.prev_segment,
+                                        font=("Helvetica", 14, "bold"))
         self.prev_btn.pack(side=tk.LEFT, padx=2)
 
         self.segment_var = tk.StringVar(value="(no segments)")
@@ -358,8 +395,8 @@ class StructureExporter:
         self.segment_label.pack(side=tk.LEFT, padx=5)
         self.segment_var.trace("w", self.on_segment_changed)
 
-        self.next_btn = tk.Button(top_frame, text=" > ", font=("Helvetica", 14, "bold"),
-                                   command=self.next_segment)
+        self.next_btn = self.make_button(top_frame, " > ", self.next_segment,
+                                        font=("Helvetica", 14, "bold"))
         self.next_btn.pack(side=tk.LEFT, padx=2)
 
         open_btn = tk.Button(top_frame, text="Open File...", command=self.open_file)
@@ -380,35 +417,35 @@ class StructureExporter:
         transport_frame = ttk.Frame(main_frame)
         transport_frame.pack(pady=5)
 
-        tk.Button(transport_frame, text="<< -10s", command=lambda: self.step(-240)).pack(side=tk.LEFT, padx=2)
-        tk.Button(transport_frame, text="< -1s", command=lambda: self.step(-24)).pack(side=tk.LEFT, padx=2)
-        tk.Button(transport_frame, text="< -1f", command=lambda: self.step(-1)).pack(side=tk.LEFT, padx=2)
+        self.make_button(transport_frame, "<< -10s", lambda: self.step(-240)).pack(side=tk.LEFT, padx=2)
+        self.make_button(transport_frame, "< -1s", lambda: self.step(-24)).pack(side=tk.LEFT, padx=2)
+        self.make_button(transport_frame, "< -1f", lambda: self.step(-1)).pack(side=tk.LEFT, padx=2)
 
-        self.play_btn = tk.Button(transport_frame, text="PLAY", command=self.toggle_play)
+        self.play_btn = self.make_button(transport_frame, "PLAY", self.toggle_play)
         self.play_btn.pack(side=tk.LEFT, padx=10)
 
-        tk.Button(transport_frame, text="+1f >", command=lambda: self.step(1)).pack(side=tk.LEFT, padx=2)
-        tk.Button(transport_frame, text="+1s >", command=lambda: self.step(24)).pack(side=tk.LEFT, padx=2)
-        tk.Button(transport_frame, text="+10s >>", command=lambda: self.step(240)).pack(side=tk.LEFT, padx=2)
+        self.make_button(transport_frame, "+1f >", lambda: self.step(1)).pack(side=tk.LEFT, padx=2)
+        self.make_button(transport_frame, "+1s >", lambda: self.step(24)).pack(side=tk.LEFT, padx=2)
+        self.make_button(transport_frame, "+10s >>", lambda: self.step(240)).pack(side=tk.LEFT, padx=2)
 
 
         # In/Out points
         points_frame = ttk.Frame(main_frame)
         points_frame.pack(fill=tk.X, pady=10)
 
-        tk.Button(points_frame, text="Set IN [I]", command=self.set_in_point).pack(side=tk.LEFT, padx=5)
+        self.make_button(points_frame, "Set IN [I]", self.set_in_point).pack(side=tk.LEFT, padx=5)
         self.in_label = ttk.Label(points_frame, text="IN: --:--", font=("Courier", 11))
         self.in_label.pack(side=tk.LEFT, padx=10)
 
-        tk.Button(points_frame, text="Set OUT [O]", command=self.set_out_point).pack(side=tk.LEFT, padx=5)
+        self.make_button(points_frame, "Set OUT [O]", self.set_out_point).pack(side=tk.LEFT, padx=5)
         self.out_label = ttk.Label(points_frame, text="OUT: --:--", font=("Courier", 11))
         self.out_label.pack(side=tk.LEFT, padx=10)
 
         self.duration_label = ttk.Label(points_frame, text="Duration: --:--", font=("Courier", 11, "bold"))
         self.duration_label.pack(side=tk.LEFT, padx=20)
 
-        tk.Button(points_frame, text="Go IN", command=self.goto_in).pack(side=tk.LEFT, padx=5)
-        tk.Button(points_frame, text="Go OUT", command=self.goto_out).pack(side=tk.LEFT, padx=5)
+        self.make_button(points_frame, "Go IN", self.goto_in).pack(side=tk.LEFT, padx=5)
+        self.make_button(points_frame, "Go OUT", self.goto_out).pack(side=tk.LEFT, padx=5)
 
         # Export options
         export_frame = ttk.LabelFrame(main_frame, text="Export to Structure", padding="10")
@@ -552,9 +589,19 @@ class StructureExporter:
     def on_slider(self, value):
         if self.player.cap and not self.player._updating_slider:
             frame = int(float(value))
-            self.player.seek(frame)
-            # Update play button if seek paused playback
+            self.player.seek(frame, scrubbing=True)
+            # Update play button
             self.play_btn.config(text="PLAY" if not self.player.playing else "PAUSE")
+            # Set timer to detect scrub end and restore playback
+            if self.player._scrub_timer:
+                self.root.after_cancel(self.player._scrub_timer)
+            self.player._scrub_timer = self.root.after(300, self._on_scrub_end)
+
+    def _on_scrub_end(self):
+        """Called when scrubbing stops"""
+        self.player._scrub_timer = None
+        self.player.scrub_ended()
+        self.play_btn.config(text="PLAY" if not self.player.playing else "PAUSE")
 
     def step(self, frames):
         if self.player.cap:
