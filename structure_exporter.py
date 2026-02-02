@@ -356,10 +356,22 @@ class StructureExporter:
         self.out_point = self.player.duration
         self.update_point_labels()
         self.status_var.set(f"Loaded: {os.path.basename(path)}")
+        self.update_output_name()
 
-        # Update output name suggestion
-        basename = os.path.splitext(os.path.basename(path))[0]
-        self.output_name_var.set(f"{basename}_clip")
+    def format_time_compact(self, seconds):
+        """Format time as m-ss for filenames (no colons)"""
+        m = int(seconds // 60)
+        s = int(seconds % 60)
+        return f"{m}-{s:02d}"
+
+    def update_output_name(self):
+        """Update suggested output name based on source and in/out points"""
+        if not self.current_segment:
+            return
+        basename = os.path.splitext(os.path.basename(self.current_segment))[0]
+        in_str = self.format_time_compact(self.in_point)
+        out_str = self.format_time_compact(self.out_point)
+        self.output_name_var.set(f"{basename}_{in_str}_to_{out_str}")
 
     def on_slider(self, value):
         if self.player.cap and not self.player._updating_slider:
@@ -384,10 +396,12 @@ class StructureExporter:
     def set_in_point(self):
         self.in_point = self.player.get_current_time()
         self.update_point_labels()
+        self.update_output_name()
 
     def set_out_point(self):
         self.out_point = self.player.get_current_time()
         self.update_point_labels()
+        self.update_output_name()
 
     def goto_in(self):
         if self.player.cap:
@@ -449,9 +463,9 @@ class StructureExporter:
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         output_path = os.path.join(OUTPUT_DIR, f"{output_name}.mov")
 
-        # Format times
+        # Format times for ffmpeg
         in_time = f"{int(self.in_point//60)}:{self.in_point%60:06.3f}"
-        out_time = f"{int(self.out_point//60)}:{self.out_point%60:06.3f}"
+        clip_duration = self.out_point - self.in_point
 
         resolution = "640:480" if res == "640" else "320:240"
 
@@ -465,8 +479,8 @@ class StructureExporter:
                 cmd = [
                     FFMPEG, "-y",
                     "-ss", in_time,
-                    "-to", out_time,
                     "-i", self.current_segment,
+                    "-t", str(clip_duration),
                     "-vf", f"scale={resolution}:force_original_aspect_ratio=decrease,pad={resolution}:(ow-iw)/2:(oh-ih)/2:black",
                     "-c:v", "mjpeg", "-q:v", "3", "-tag:v", "mjpa",
                     "-an", "-dn", "-sn", "-map_metadata", "-1", "-map", "0:v:0",
