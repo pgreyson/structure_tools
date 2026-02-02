@@ -1,0 +1,61 @@
+#!/bin/bash
+# Structure Exporter remote control helper
+# Usage: se <command>
+
+CMD_FILE="/tmp/structure_exporter_cmd"
+PID_FILE="/tmp/structure_exporter.pid"
+
+cmd="$1"
+shift
+
+case "$cmd" in
+    screenshot|ss|s)
+        kill -USR1 $(cat $PID_FILE) 2>/dev/null
+        sleep 0.5
+        cat /tmp/structure_exporter_screenshot_path.txt
+        ;;
+    next|n)
+        echo "next" > $CMD_FILE
+        ;;
+    prev|p)
+        echo "prev" > $CMD_FILE
+        ;;
+    step)
+        echo "step $1" > $CMD_FILE
+        ;;
+    play)
+        echo "play" > $CMD_FILE
+        ;;
+    pause)
+        echo "pause" > $CMD_FILE
+        ;;
+    setin|i)
+        echo "setin" > $CMD_FILE
+        ;;
+    setout|o)
+        echo "setout" > $CMD_FILE
+        ;;
+    restart|r)
+        pkill -f "python3.*structure_exporter.py"
+        sleep 0.5
+        python3 /Volumes/Workspace/Downloads/structure_exporter.py &
+        sleep 2
+        echo "Restarted. PID: $(cat $PID_FILE)"
+        ;;
+    pid)
+        cat $PID_FILE
+        ;;
+    *)
+        echo "Usage: se <command>"
+        echo "Commands:"
+        echo "  s, ss, screenshot  - Take & open screenshot"
+        echo "  n, next            - Next segment"
+        echo "  p, prev            - Previous segment"
+        echo "  step <N>           - Step N frames"
+        echo "  play, pause        - Playback control"
+        echo "  i, setin           - Set IN point"
+        echo "  o, setout          - Set OUT point"
+        echo "  r, restart         - Restart app"
+        echo "  pid                - Show app PID"
+        ;;
+esac
