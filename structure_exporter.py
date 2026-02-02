@@ -34,6 +34,16 @@ except ImportError:
     SYPHON_AVAILABLE = False
     print("Warning: syphon-python not installed. Run: pip install syphon-python")
 
+# AVFoundation for hardware-accelerated video
+try:
+    import AVFoundation
+    import CoreMedia
+    import Quartz
+    AVFOUNDATION_AVAILABLE = True
+except ImportError:
+    AVFOUNDATION_AVAILABLE = False
+    print("Note: AVFoundation not available, using OpenCV")
+
 # Configuration
 SEGMENT_DIR = "/Volumes/Workspace/Downloads/3d_rarities_output"
 OUTPUT_DIR = "/Volumes/Workspace/Downloads/3d_rarities_structure"
@@ -48,16 +58,15 @@ EYE_WIDTH = 1920  # Each eye panel
 
 
 class SyphonOutput:
-    """Sends stereo frames to Syphon for display by external client (non-blocking)"""
+    """Sends frames to Syphon for display by external client"""
 
     def __init__(self):
         self.server = None
         self.texture = None
         self.enabled = False
-        self._pending_frame = None
-        self._lock = threading.Lock()
-        self._thread = None
-        self._running = False
+        self._output_buffer = None
+        self._tex_width = 0
+        self._tex_height = 0
 
     def toggle(self):
         """Toggle Syphon output on/off"""
@@ -74,11 +83,7 @@ class SyphonOutput:
 
         try:
             self.server = syphon.SyphonMetalServer("Structure Exporter")
-            self.texture = create_mtl_texture(self.server.device, SYPHON_WIDTH, SYPHON_HEIGHT)
             self.enabled = True
-            self._running = True
-            self._thread = threading.Thread(target=self._worker, daemon=True)
-            self._thread.start()
             print("Syphon server started: 'Structure Exporter'")
             return True
         except Exception as e:
@@ -87,10 +92,6 @@ class SyphonOutput:
 
     def disable(self):
         """Stop Syphon server"""
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=1)
-            self._thread = None
         if self.server:
             try:
                 self.server.stop()
@@ -98,55 +99,35 @@ class SyphonOutput:
                 pass
             self.server = None
             self.texture = None
+            self._output_buffer = None
         self.enabled = False
         print("Syphon server stopped")
 
     def send_frame(self, frame_bgr):
-        """Queue frame for Syphon (non-blocking)"""
-        if not self.enabled:
+        """Send frame directly to Syphon (called from decode thread)"""
+        if not self.enabled or not self.server:
             return
-        with self._lock:
-            self._pending_frame = frame_bgr.copy()
 
-    def _worker(self):
-        """Background thread that processes and sends frames"""
-        while self._running and self.server:
-            frame = None
-            with self._lock:
-                if self._pending_frame is not None:
-                    frame = self._pending_frame
-                    self._pending_frame = None
-
-            if frame is not None:
-                self._process_and_send(frame)
-            else:
-                time.sleep(0.005)  # 5ms idle sleep
-
-    def _process_and_send(self, frame_bgr):
-        """Process and send frame to Syphon"""
         try:
             h, w = frame_bgr.shape[:2]
 
-            # Scale to fit 3840x1080 with letterboxing
-            scale = min(SYPHON_WIDTH / w, SYPHON_HEIGHT / h)
-            new_w, new_h = int(w * scale), int(h * scale)
+            # Recreate texture if size changed
+            if w != self._tex_width or h != self._tex_height:
+                self.texture = create_mtl_texture(self.server.device, w, h)
+                self._output_buffer = np.zeros((h, w, 4), dtype=np.uint8)
+                self._tex_width = w
+                self._tex_height = h
+                print(f"Syphon texture: {w}x{h}")
 
-            # Resize and convert to RGB
-            resized = cv2.resize(frame_bgr, (new_w, new_h))
-            resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            # Convert BGR to RGBA (in-place to pre-allocated buffer)
+            self._output_buffer[:, :, 0] = frame_bgr[:, :, 2]  # R
+            self._output_buffer[:, :, 1] = frame_bgr[:, :, 1]  # G
+            self._output_buffer[:, :, 2] = frame_bgr[:, :, 0]  # B
+            self._output_buffer[:, :, 3] = 255  # A
 
-            # Create output with letterboxing
-            output = np.zeros((SYPHON_HEIGHT, SYPHON_WIDTH, 4), dtype=np.uint8)
-            paste_x = (SYPHON_WIDTH - new_w) // 2
-            paste_y = (SYPHON_HEIGHT - new_h) // 2
-            output[paste_y:paste_y+new_h, paste_x:paste_x+new_w, :3] = resized
-            output[:, :, 3] = 255  # Alpha
-
-            # Flip vertically for Metal texture coordinates
-            output = np.flipud(output)
-
-            # Send to Syphon
-            copy_image_to_mtl_texture(output, self.texture)
+            # Flip and send
+            flipped = np.ascontiguousarray(self._output_buffer[::-1])
+            copy_image_to_mtl_texture(flipped, self.texture)
             self.server.publish_frame_texture(self.texture)
         except Exception as e:
             print(f"Syphon send error: {e}")
@@ -164,13 +145,28 @@ class VideoPlayer:
         self.playing = False
         self.photo = None
         self.duration = 0
-        self.frame_callback = None  # Called with raw BGR frame for mirroring
+        self.frame_callback = None  # Called with raw BGR frame for Syphon
         self._updating_slider = False  # Prevent slider callback during playback
+        # Decode thread
+        self._decode_thread = None
+        self._decode_running = False
+        self._last_frame_time = 0
 
     def load(self, path):
+        # Remember if we were playing
+        was_playing = self.playing
+
+        # Stop decode thread first
+        self._decode_running = False
+        self.playing = False
+        if self._decode_thread and self._decode_thread.is_alive():
+            self._decode_thread.join(timeout=1)
+        self._decode_thread = None
+
         if self.cap:
             self.cap.release()
-        self.cap = cv2.VideoCapture(path)
+        # Use AVFoundation backend for hardware decoding on macOS
+        self.cap = cv2.VideoCapture(path, cv2.CAP_AVFOUNDATION)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 24
         self.duration = self.total_frames / self.fps
@@ -178,48 +174,47 @@ class VideoPlayer:
         self.slider.configure(to=self.total_frames - 1)
         self.seek(0)
 
+        # Resume playback if was playing
+        if was_playing:
+            self.play()
+
     def seek(self, frame_num):
         if not self.cap:
             return
+
+        # Pause playback during seek (user can resume with play button)
+        if self.playing:
+            self._decode_running = False
+            self.playing = False
+            if self._decode_thread and self._decode_thread.is_alive():
+                self._decode_thread.join(timeout=0.5)
+            self._decode_thread = None
+
         frame_num = max(0, min(frame_num, self.total_frames - 1))
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
         self.current_frame = frame_num
         self.show_frame()
 
     def show_frame(self, reset_position=True):
+        """Show single frame (for scrubbing, not playback)"""
         if not self.cap:
             return
         ret, frame = self.cap.read()
         if ret:
-            # Call frame callback for mirroring (with copy of BGR frame)
+            # Send to Syphon
             if self.frame_callback:
                 try:
-                    self.frame_callback(frame.copy())
+                    self.frame_callback(frame)
                 except Exception as e:
                     print(f"Frame callback error: {e}")
-
-            # Resize to fit canvas (maintain aspect ratio)
-            h, w = frame.shape[:2]
-            canvas_w = self.canvas.winfo_width()
-            canvas_h = self.canvas.winfo_height()
-            if canvas_w <= 1:
-                canvas_w, canvas_h = 800, 300
-
-            scale = min(canvas_w / w, canvas_h / h)
-            new_w, new_h = int(w * scale), int(h * scale)
-
-            display_frame = cv2.resize(frame, (new_w, new_h))
-            display_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
-
-            img = Image.fromarray(display_frame)
-            self.photo = ImageTk.PhotoImage(img)
-
-            self.canvas.delete("all")
-            self.canvas.create_image(canvas_w//2, canvas_h//2, image=self.photo, anchor=tk.CENTER)
 
             # Update time label
             current_time = self.current_frame / self.fps
             self.time_label.config(text=f"{self.format_time(current_time)} / {self.format_time(self.duration)}")
+
+            # Reset read position for scrubbing
+            if reset_position:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
 
             # Reset position for scrubbing (not needed during continuous playback)
             if reset_position:
@@ -236,29 +231,65 @@ class VideoPlayer:
 
     def play(self):
         self.playing = True
-        self._play_loop()
+        self._decode_running = True
+        self._last_frame_time = time.time()
+        self._decode_thread = threading.Thread(target=self._decode_loop, daemon=True)
+        self._decode_thread.start()
+        self._update_ui_loop()
 
     def pause(self):
         self.playing = False
+        self._decode_running = False
 
-    def _play_loop(self):
-        if self.playing and self.cap:
-            # Read advances position automatically, just track frame number
-            self.current_frame += 1
-            if self.current_frame >= self.total_frames:
-                self.current_frame = 0
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Loop back to start
+    def _decode_loop(self):
+        """Decode and send frames in background thread"""
+        frame_duration = 1.0 / self.fps
+        next_frame_time = time.perf_counter()
 
-            # Update slider without triggering seek callback
+        while self._decode_running and self.cap:
+            ret, frame = self.cap.read()
+            if ret:
+                self.current_frame += 1
+                if self.current_frame >= self.total_frames:
+                    self.current_frame = 0
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+                # Send to Syphon
+                if self.frame_callback:
+                    try:
+                        self.frame_callback(frame)
+                    except Exception as e:
+                        print(f"Frame callback error: {e}")
+
+            # Wait for next frame time (absolute timing, no drift)
+            next_frame_time += frame_duration
+            sleep_time = next_frame_time - time.perf_counter()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            elif sleep_time < -frame_duration:
+                # Too far behind, reset timing
+                next_frame_time = time.perf_counter()
+
+    def _update_ui_loop(self):
+        """Update UI elements (runs in main thread)"""
+        if self.playing:
+            # Update slider
             self._updating_slider = True
             self.slider.set(self.current_frame)
             self._updating_slider = False
 
-            # Show frame without resetting position (continuous playback)
-            self.show_frame(reset_position=False)
-            self.canvas.after(int(1000/self.fps), self._play_loop)
+            # Update time label
+            current_time = self.current_frame / self.fps
+            self.time_label.config(text=f"{self.format_time(current_time)} / {self.format_time(self.duration)}")
+
+            # Schedule next UI update (10 times per second is enough)
+            self.time_label.after(100, self._update_ui_loop)
 
     def release(self):
+        self._decode_running = False
+        self.playing = False
+        if self._decode_thread and self._decode_thread.is_alive():
+            self._decode_thread.join(timeout=1)
         if self.cap:
             self.cap.release()
 
@@ -271,7 +302,7 @@ class StructureExporter:
     def __init__(self, root):
         self.root = root
         self.root.title("Structure Exporter")
-        self.root.geometry("900x700")
+        self.root.geometry("700x350")
 
         self.in_point = 0
         self.out_point = 0
@@ -334,9 +365,8 @@ class StructureExporter:
         open_btn = tk.Button(top_frame, text="Open File...", command=self.open_file)
         open_btn.pack(side=tk.LEFT, padx=5)
 
-        # Video canvas
-        self.canvas = tk.Canvas(main_frame, bg="black", height=350)
-        self.canvas.pack(fill=tk.BOTH, expand=True, pady=5)
+        # Placeholder for canvas (not displayed, kept for compatibility)
+        self.canvas = tk.Frame(main_frame)  # Dummy frame
 
         # Time display
         self.time_label = ttk.Label(main_frame, text="0:00.00 / 0:00.00", font=("Courier", 12))
@@ -498,6 +528,11 @@ class StructureExporter:
         self.update_point_labels()
         self.status_var.set(f"Loaded: {os.path.basename(path)}")
         self.update_output_name()
+        # Update play button to match player state
+        if self.player.playing:
+            self.play_btn.config(text="PAUSE")
+        else:
+            self.play_btn.config(text="PLAY")
 
     def format_time_compact(self, seconds):
         """Format time as m-ss for filenames (no colons)"""
@@ -518,6 +553,8 @@ class StructureExporter:
         if self.player.cap and not self.player._updating_slider:
             frame = int(float(value))
             self.player.seek(frame)
+            # Update play button if seek paused playback
+            self.play_btn.config(text="PLAY" if not self.player.playing else "PAUSE")
 
     def step(self, frames):
         if self.player.cap:
