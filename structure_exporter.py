@@ -43,6 +43,7 @@ class VideoPlayer:
         self.playing = False
         self.photo = None
         self.duration = 0
+        self._updating_slider = False  # Prevent slider callback during playback
 
     def load(self, path):
         if self.cap:
@@ -63,7 +64,7 @@ class VideoPlayer:
         self.current_frame = frame_num
         self.show_frame()
 
-    def show_frame(self):
+    def show_frame(self, reset_position=True):
         if not self.cap:
             return
         ret, frame = self.cap.read()
@@ -91,8 +92,9 @@ class VideoPlayer:
             current_time = self.current_frame / self.fps
             self.time_label.config(text=f"{self.format_time(current_time)} / {self.format_time(self.duration)}")
 
-            # Reset position for next read
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+            # Reset position for scrubbing (not needed during continuous playback)
+            if reset_position:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
 
     def format_time(self, seconds):
         m = int(seconds // 60)
@@ -112,11 +114,19 @@ class VideoPlayer:
 
     def _play_loop(self):
         if self.playing and self.cap:
+            # Read advances position automatically, just track frame number
             self.current_frame += 1
             if self.current_frame >= self.total_frames:
                 self.current_frame = 0
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Loop back to start
+
+            # Update slider without triggering seek callback
+            self._updating_slider = True
             self.slider.set(self.current_frame)
-            self.show_frame()
+            self._updating_slider = False
+
+            # Show frame without resetting position (continuous playback)
+            self.show_frame(reset_position=False)
             self.canvas.after(int(1000/self.fps), self._play_loop)
 
     def release(self):
@@ -352,7 +362,7 @@ class StructureExporter:
         self.output_name_var.set(f"{basename}_clip")
 
     def on_slider(self, value):
-        if self.player.cap:
+        if self.player.cap and not self.player._updating_slider:
             frame = int(float(value))
             self.player.seek(frame)
 
