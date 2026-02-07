@@ -239,11 +239,7 @@ class VideoPlayer:
             current_time = self.current_frame / self.fps
             self.time_label.config(text=f"{self.format_time(current_time)} / {self.format_time(self.duration)}")
 
-            # Reset read position for scrubbing
-            if reset_position:
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
-
-            # Reset position for scrubbing (not needed during continuous playback)
+            # Reset read position for scrubbing (not needed during continuous playback)
             if reset_position:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
 
@@ -348,9 +344,6 @@ class StructureExporter:
         # Start command file polling
         self._poll_commands()
 
-        # macOS focus fix - keep event loop pumping
-        self.root.bind("<FocusIn>", self._on_focus_in)
-        self._pump_events()
 
         self.current_segment = None
 
@@ -366,10 +359,8 @@ class StructureExporter:
         # (disabled by default to avoid any overhead)
 
     def make_button(self, parent, text, command, **kwargs):
-        """Create a button with tap feedback"""
-        btn = tk.Button(parent, text=text, command=command,
-                       activebackground="#4a90d9", activeforeground="white",
-                       **kwargs)
+        """Create a button with standard tk styling"""
+        btn = tk.Button(parent, text=text, command=command, **kwargs)
         return btn
 
     def setup_ui(self):
@@ -393,7 +384,7 @@ class StructureExporter:
                                        font=("Courier", 11), width=35, anchor="w",
                                        relief="sunken", padx=5, pady=3)
         self.segment_label.pack(side=tk.LEFT, padx=5)
-        self.segment_var.trace("w", self.on_segment_changed)
+        self.segment_var.trace_add("write", self.on_segment_changed)
 
         self.next_btn = self.make_button(top_frame, " > ", self.next_segment,
                                         font=("Helvetica", 14, "bold"))
@@ -421,7 +412,7 @@ class StructureExporter:
         self.make_button(transport_frame, "< -1s", lambda: self.step(-24)).pack(side=tk.LEFT, padx=2)
         self.make_button(transport_frame, "< -1f", lambda: self.step(-1)).pack(side=tk.LEFT, padx=2)
 
-        self.play_btn = self.make_button(transport_frame, "PLAY", self.toggle_play)
+        self.play_btn = tk.Button(transport_frame, text="PLAY", command=self.toggle_play, width=6)
         self.play_btn.pack(side=tk.LEFT, padx=10)
 
         self.make_button(transport_frame, "+1f >", lambda: self.step(1)).pack(side=tk.LEFT, padx=2)
@@ -714,7 +705,7 @@ class StructureExporter:
                     "-ss", in_time,
                     "-i", self.current_segment,
                     "-t", str(clip_duration),
-                    "-vf", f"scale={resolution}:force_original_aspect_ratio=decrease,pad={resolution}:(ow-iw)/2:(oh-ih)/2:black",
+                    "-vf", f"[0:v]split[l][r];[l]crop=iw/2:ih:0:0,scale={int(res)//2}:{480 if res == '640' else 240}[left];[r]crop=iw/2:ih:iw/2:0,scale={int(res)//2}:{480 if res == '640' else 240}[right];[left][right]hstack,setsar=1",
                     "-c:v", "mjpeg", "-q:v", "3", "-tag:v", "mjpa",
                     "-an", "-dn", "-sn", "-map_metadata", "-1", "-map", "0:v:0",
                     output_path
@@ -804,22 +795,6 @@ class StructureExporter:
         # Poll again in 100ms
         self.root.after(100, self._poll_commands)
 
-    def _on_focus_in(self, event):
-        """Restore event handling when window regains focus (macOS Sonoma Tk 8.6.12 bug fix)"""
-        # Workaround: slightly move the window to reset event handling
-        # This simulates the manual "drag window" fix for the Tcl/Tk bug
-        x = self.root.winfo_x()
-        y = self.root.winfo_y()
-        self.root.geometry(f"+{x+1}+{y}")
-        self.root.after(50, lambda: self.root.geometry(f"+{x}+{y}"))
-
-    def _pump_events(self):
-        """Keep event loop responsive on macOS"""
-        try:
-            self.root.update_idletasks()
-        except:
-            pass
-        self.root.after(50, self._pump_events)
 
     def _execute_command(self, cmd):
         """Execute a remote command"""
