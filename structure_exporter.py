@@ -328,7 +328,7 @@ class StructureExporter:
     def __init__(self, root):
         self.root = root
         self.root.title("Structure Exporter")
-        self.root.geometry("700x350")
+        self.root.geometry("800x380")
 
         self.in_point = 0
         self.out_point = 0
@@ -359,8 +359,17 @@ class StructureExporter:
         # (disabled by default to avoid any overhead)
 
     def make_button(self, parent, text, command, **kwargs):
-        """Create a button with standard tk styling"""
-        btn = tk.Button(parent, text=text, command=command, **kwargs)
+        """Create a button with tap feedback using ttk"""
+        # Filter out tk.Button-only kwargs that ttk doesn't support
+        font = kwargs.pop("font", None)
+        style_name = f"Tap{id(command)}.TButton"
+        style = ttk.Style()
+        if font:
+            style.configure(style_name, font=font)
+        style.map(style_name,
+                  background=[("pressed", "#4a90d9"), ("active", "#6aaaee")],
+                  foreground=[("pressed", "white")])
+        btn = ttk.Button(parent, text=text, command=command, style=style_name, **kwargs)
         return btn
 
     def setup_ui(self):
@@ -700,12 +709,20 @@ class StructureExporter:
         # Run export in thread
         def do_export():
             try:
+                out_w = int(res)
+                out_h = 480 if res == "640" else 240
+                eye_w = out_w // 2
                 cmd = [
                     FFMPEG, "-y",
                     "-ss", in_time,
                     "-i", self.current_segment,
                     "-t", str(clip_duration),
-                    "-vf", f"[0:v]split[l][r];[l]crop=iw/2:ih:0:0,scale={int(res)//2}:{480 if res == '640' else 240}[left];[r]crop=iw/2:ih:iw/2:0,scale={int(res)//2}:{480 if res == '640' else 240}[right];[left][right]hstack,setsar=1",
+                    "-vf", (
+                        f"[0:v]split[l][r];"
+                        f"[l]crop=iw/2:ih:0:0,scale={eye_w}:{out_h}[left];"
+                        f"[r]crop=iw/2:ih:iw/2:0,scale={eye_w}:{out_h}[right];"
+                        f"[left][right]hstack,setsar=1"
+                    ),
                     "-c:v", "mjpeg", "-q:v", "3", "-tag:v", "mjpa",
                     "-an", "-dn", "-sn", "-map_metadata", "-1", "-map", "0:v:0",
                     output_path
@@ -857,18 +874,8 @@ def main():
     style = ttk.Style()
     style.theme_use('aqua')
 
-    # macOS focus fix
-    root.lift()
-    root.focus_force()
-    root.attributes('-topmost', True)
-    root.update()
-    root.attributes('-topmost', False)
-
     app = StructureExporter(root)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
-
-    # Bind click anywhere to ensure focus
-    root.bind("<Button-1>", lambda e: root.focus_force())
 
     root.mainloop()
 
