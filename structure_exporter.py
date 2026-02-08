@@ -23,6 +23,7 @@ import threading
 import time
 import signal
 import numpy as np
+import AppKit
 
 # Syphon for video output
 try:
@@ -170,6 +171,9 @@ class VideoPlayer:
         # Scrub state
         self._was_playing_before_scrub = False
         self._scrub_timer = None
+        # Loop bounds (frame numbers)
+        self.loop_in = 0
+        self.loop_out = 0  # 0 means end of video
 
     def load(self, path):
         # Remember if we were playing
@@ -274,9 +278,10 @@ class VideoPlayer:
                 ret, frame = self.cap.read()
                 if ret:
                     self.current_frame += 1
-                    if self.current_frame >= self.total_frames:
-                        self.current_frame = 0
-                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    loop_end = self.loop_out if self.loop_out > 0 else self.total_frames
+                    if self.current_frame >= loop_end:
+                        self.current_frame = self.loop_in
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.loop_in)
 
                     # Send to Syphon
                     if self.frame_callback:
@@ -328,7 +333,7 @@ class StructureExporter:
     def __init__(self, root):
         self.root = root
         self.root.title("Structure Exporter")
-        self.root.geometry("800x380")
+        self.root.geometry("800x580")
 
         self.in_point = 0
         self.out_point = 0
@@ -467,9 +472,6 @@ class StructureExporter:
         self.output_entry = ttk.Entry(row2, textvariable=self.output_name_var, width=30)
         self.output_entry.pack(side=tk.LEFT, padx=5)
 
-        self.copy_to_sd_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(row2, text="Copy to Structure SD", variable=self.copy_to_sd_var).pack(side=tk.LEFT, padx=20)
-
         self.export_btn = tk.Button(row2, text="EXPORT", command=self.export_clip,
                                       font=("Helvetica", 12, "bold"), padx=10, pady=5)
         self.export_btn.pack(side=tk.RIGHT, padx=5)
@@ -477,6 +479,9 @@ class StructureExporter:
         # Status
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(main_frame, textvariable=self.status_var).pack(anchor=tk.W)
+
+        # --- SD Sync Panel ---
+        self.setup_sync_panel(main_frame)
 
         # Initialize video player
         self.player = VideoPlayer(self.canvas, self.time_label, self.slider)
@@ -562,6 +567,8 @@ class StructureExporter:
         self.player.load(path)
         self.in_point = 0
         self.out_point = self.player.duration
+        self.player.loop_in = 0
+        self.player.loop_out = 0
         self.update_point_labels()
         self.status_var.set(f"Loaded: {os.path.basename(path)}")
         self.update_output_name()
@@ -590,6 +597,21 @@ class StructureExporter:
         if self.player.cap and not self.player._updating_slider:
             frame = int(float(value))
             self.player.seek(frame, scrubbing=True)
+            # Update loop bounds based on scrub position
+            scrub_time = frame / self.player.fps
+            changed = False
+            if scrub_time < self.in_point:
+                self.in_point = scrub_time
+                self.player.loop_in = frame
+                changed = True
+            if scrub_time > self.out_point:
+                # Past OUT: reset to end of video
+                self.out_point = self.player.duration
+                self.player.loop_out = 0
+                changed = True
+            if changed:
+                self.update_point_labels()
+                self.update_output_name()
             # Update play button
             self.play_btn.config(text="PLAY" if not self.player.playing else "PAUSE")
             # Set timer to detect scrub end and restore playback
@@ -610,6 +632,21 @@ class StructureExporter:
             self.slider.set(new_frame)
             self.player.seek(new_frame)
 
+            # Expand loop bounds if stepping outside them
+            new_time = new_frame / self.player.fps
+            changed = False
+            if new_time < self.in_point:
+                self.in_point = new_time
+                self.player.loop_in = new_frame
+                changed = True
+            if new_time > self.out_point:
+                self.out_point = new_time
+                self.player.loop_out = new_frame
+                changed = True
+            if changed:
+                self.update_point_labels()
+                self.update_output_name()
+
     def toggle_play(self):
         if self.player.playing:
             self.player.pause()
@@ -628,11 +665,13 @@ class StructureExporter:
 
     def set_in_point(self):
         self.in_point = self.player.get_current_time()
+        self.player.loop_in = int(self.in_point * self.player.fps)
         self.update_point_labels()
         self.update_output_name()
 
     def set_out_point(self):
         self.out_point = self.player.get_current_time()
+        self.player.loop_out = int(self.out_point * self.player.fps)
         self.update_point_labels()
         self.update_output_name()
 
@@ -653,7 +692,8 @@ class StructureExporter:
         self.out_label.config(text=f"OUT: {self.format_time(self.out_point)}")
 
         duration = self.out_point - self.in_point
-        self.duration_label.config(text=f"Duration: {self.format_time(abs(duration))}")
+        frames = int(abs(duration) * self.player.fps) if self.player.fps else 0
+        self.duration_label.config(text=f"Duration: {self.format_time(abs(duration))} ({frames}f)")
 
         # Warning for too long
         res = self.resolution_var.get()
@@ -736,19 +776,36 @@ class StructureExporter:
                     self.root.after(0, lambda: messagebox.showerror("Error", f"Export failed:\n{result.stderr}"))
                     self.root.after(0, lambda: self.status_var.set("Export failed"))
                 else:
-                    # Copy to SD if requested
-                    copied = False
-                    if self.copy_to_sd_var.get() and os.path.isdir(STRUCTURE_SD):
-                        import shutil
-                        shutil.copy(output_path, os.path.join(STRUCTURE_SD, f"{output_name}.mov"))
-                        copied = True
+                    # Generate Finder thumbnail by setting custom icon
+                    thumb_path = output_path + ".thumb.png"
+                    thumb_cmd = [
+                        FFMPEG, "-y",
+                        "-i", output_path,
+                        "-frames:v", "1",
+                        "-vf", "scale=512:-1",
+                        "-update", "1",
+                        thumb_path
+                    ]
+                    thumb_result = subprocess.run(thumb_cmd, capture_output=True, text=True)
+                    if thumb_result.returncode == 0 and os.path.exists(thumb_path):
+                        # Set icon from main thread via after()
+                        def set_icon(path=output_path, thumb=thumb_path):
+                            try:
+                                icon_image = AppKit.NSImage.alloc().initWithContentsOfFile_(thumb)
+                                if icon_image:
+                                    AppKit.NSWorkspace.sharedWorkspace().setIcon_forFile_options_(
+                                        icon_image, path, 0)
+                            except Exception as e:
+                                print(f"Thumbnail icon error: {e}")
+                            finally:
+                                if os.path.exists(thumb):
+                                    os.remove(thumb)
+                        self.root.after(0, set_icon)
 
                     msg = f"Exported: {output_path}"
-                    if copied:
-                        msg += f"\nCopied to: {STRUCTURE_SD}"
-
                     self.root.after(0, lambda: messagebox.showinfo("Success", msg))
                     self.root.after(0, lambda: self.status_var.set("Export complete"))
+                    self.root.after(0, self.refresh_clip_list)
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
                 self.root.after(0, lambda: self.status_var.set("Export failed"))
@@ -756,6 +813,158 @@ class StructureExporter:
                 self.root.after(0, lambda: self.export_btn.config(state="normal"))
 
         threading.Thread(target=do_export, daemon=True).start()
+
+    def setup_sync_panel(self, parent):
+        """Create the SD card sync panel with clip checkboxes"""
+        sync_frame = ttk.LabelFrame(parent, text="Structure SD Sync", padding="5")
+        sync_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Clip list with scrollbar
+        list_frame = ttk.Frame(sync_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(list_frame, height=120)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=canvas.yview)
+        self.clip_list_frame = ttk.Frame(canvas)
+
+        self.clip_list_frame.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self.clip_list_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Bottom bar: total frames + sync button
+        bottom = ttk.Frame(sync_frame)
+        bottom.pack(fill=tk.X, pady=(5, 0))
+
+        self.total_frames_label = ttk.Label(bottom, text="Checked: 0 clips, 0 frames",
+                                             font=("Courier", 10))
+        self.total_frames_label.pack(side=tk.LEFT)
+
+        self.sd_status_label = ttk.Label(bottom, text="", font=("Courier", 10))
+        self.sd_status_label.pack(side=tk.LEFT, padx=20)
+
+        self.sync_btn = tk.Button(bottom, text="SYNC TO SD", command=self.sync_to_sd,
+                                   font=("Helvetica", 11, "bold"), padx=8, pady=3)
+        self.sync_btn.pack(side=tk.RIGHT)
+
+        # Track clip checkboxes: {filename: (BooleanVar, frame_count)}
+        self.clip_vars = {}
+        self.refresh_clip_list()
+
+    def refresh_clip_list(self):
+        """Refresh the list of clips from the output directory"""
+        # Clear existing widgets
+        for widget in self.clip_list_frame.winfo_children():
+            widget.destroy()
+        self.clip_vars.clear()
+
+        if not os.path.isdir(OUTPUT_DIR):
+            return
+
+        # Check which files are on SD
+        sd_files = set()
+        sd_present = os.path.isdir(STRUCTURE_SD)
+        if sd_present:
+            sd_files = {f for f in os.listdir(STRUCTURE_SD) if f.endswith(".mov")}
+            self.sd_status_label.config(text="SD: mounted", foreground="green")
+            self.sync_btn.config(state="normal")
+        else:
+            self.sd_status_label.config(text="SD: not found", foreground="red")
+            self.sync_btn.config(state="disabled")
+
+        mov_files = sorted(f for f in os.listdir(OUTPUT_DIR) if f.endswith(".mov"))
+
+        for i, filename in enumerate(mov_files):
+            filepath = os.path.join(OUTPUT_DIR, filename)
+
+            # Get frame count via ffprobe
+            try:
+                result = subprocess.run(
+                    [FFPROBE, "-v", "error", "-select_streams", "v:0",
+                     "-show_entries", "stream=nb_frames",
+                     "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+                    capture_output=True, text=True, timeout=5)
+                frames = int(result.stdout.strip())
+            except:
+                frames = 0
+
+            # Get resolution
+            try:
+                result = subprocess.run(
+                    [FFPROBE, "-v", "error", "-select_streams", "v:0",
+                     "-show_entries", "stream=width,height",
+                     "-of", "csv=p=0", filepath],
+                    capture_output=True, text=True, timeout=5)
+                res = result.stdout.strip()
+            except:
+                res = "?"
+
+            var = tk.BooleanVar(value=(filename in sd_files))
+            self.clip_vars[filename] = (var, frames)
+
+            row = ttk.Frame(self.clip_list_frame)
+            row.pack(fill=tk.X, pady=1)
+
+            cb = ttk.Checkbutton(row, variable=var, command=self.update_frame_total)
+            cb.pack(side=tk.LEFT)
+
+            name_label = ttk.Label(row, text=filename, font=("Courier", 10), width=40, anchor="w")
+            name_label.pack(side=tk.LEFT, padx=(0, 10))
+
+            info = f"{res}  {frames} frames"
+            ttk.Label(row, text=info, font=("Courier", 10)).pack(side=tk.LEFT)
+
+            # Indicate if on SD
+            if filename in sd_files:
+                ttk.Label(row, text="[SD]", font=("Courier", 10, "bold"),
+                         foreground="green").pack(side=tk.LEFT, padx=5)
+
+        self.update_frame_total()
+
+    def update_frame_total(self):
+        """Update the total frame count for checked clips"""
+        total_frames = 0
+        checked_count = 0
+        for filename, (var, frames) in self.clip_vars.items():
+            if var.get():
+                total_frames += frames
+                checked_count += 1
+
+        max_clips = 16
+        color = "red" if checked_count > max_clips else ""
+        self.total_frames_label.config(
+            text=f"Checked: {checked_count}/{max_clips} clips, {total_frames} frames",
+            foreground=color)
+
+    def sync_to_sd(self):
+        """Sync checked clips to SD card, remove unchecked ones"""
+        if not os.path.isdir(STRUCTURE_SD):
+            messagebox.showerror("Error", "Structure SD card not found")
+            return
+
+        import shutil
+        checked = {f for f, (var, _) in self.clip_vars.items() if var.get()}
+        sd_files = {f for f in os.listdir(STRUCTURE_SD) if f.endswith(".mov")}
+
+        # Copy checked files not on SD
+        copied = 0
+        for filename in checked - sd_files:
+            src = os.path.join(OUTPUT_DIR, filename)
+            dst = os.path.join(STRUCTURE_SD, filename)
+            shutil.copy2(src, dst)
+            copied += 1
+
+        # Remove unchecked files from SD
+        removed = 0
+        for filename in sd_files - checked:
+            os.remove(os.path.join(STRUCTURE_SD, filename))
+            removed += 1
+
+        self.status_var.set(f"SD sync: {copied} copied, {removed} removed")
+        self.refresh_clip_list()
 
     def take_screenshot(self):
         """Capture screenshot of the app window"""
