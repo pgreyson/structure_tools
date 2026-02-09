@@ -48,6 +48,8 @@ Right-click source → Edit Transform:
 
 **Stretch to bounds** is the key setting. The Elgato captures 1920x1080 (half-SBS with both eyes squeezed in). Stretching to the 3840x1080 bounding box doubles the width, unsqueezing each eye into its own full 1920x1080 panel for the Viture glasses.
 
+> **TODO:** The image is currently horizontally stretched on the Viture display. Structure outputs 4:3 SD composite, but the Elgato captures it as 1920x1080 (16:9), stretching the 4:3 content. "Stretch to bounds" then doubles the width for full SBS, compounding the distortion. Need to pillarbox each eye to maintain 4:3 aspect ratio within each 1920x1080 panel (black bars on sides).
+
 ### Fullscreen Projector
 
 Right-click the OBS Preview → Fullscreen Projector → Viture display (monitor 1).
