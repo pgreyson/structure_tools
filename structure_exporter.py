@@ -23,6 +23,7 @@ import threading
 import time
 import signal
 import numpy as np
+import json
 import AppKit
 
 # Syphon for video output
@@ -51,6 +52,7 @@ OUTPUT_DIR = "/Volumes/Workspace/Downloads/3d_rarities_structure"
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 FFPROBE = "/opt/homebrew/bin/ffprobe"
 STRUCTURE_SD = "/Volumes/STRUCT_SD/clips"
+INDEX_FILE = os.path.join(OUTPUT_DIR, "index.json")
 
 # Syphon output: 3840x1080 (side-by-side stereo for Viture glasses)
 SYPHON_WIDTH = 3840
@@ -171,9 +173,9 @@ class VideoPlayer:
         # Scrub state
         self._was_playing_before_scrub = False
         self._scrub_timer = None
-        # Loop bounds (frame numbers)
-        self.loop_in = 0
-        self.loop_out = 0  # 0 means end of video
+        # Loop bounds (seconds)
+        self.loop_in = 0.0
+        self.loop_out = 0.0  # 0 means end of video
 
     def load(self, path):
         # Remember if we were playing
@@ -240,7 +242,7 @@ class VideoPlayer:
                     print(f"Frame callback error: {e}")
 
             # Update time label
-            current_time = self.current_frame / self.fps
+            current_time = self.get_current_time()
             self.time_label.config(text=f"{self.format_time(current_time)} / {self.format_time(self.duration)}")
 
             # Reset read position for scrubbing (not needed during continuous playback)
@@ -254,6 +256,8 @@ class VideoPlayer:
         return f"{m}:{s:02d}.{ms:02d}"
 
     def get_current_time(self):
+        if self.cap:
+            return self.cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
         return self.current_frame / self.fps
 
     def play(self):
@@ -278,10 +282,15 @@ class VideoPlayer:
                 ret, frame = self.cap.read()
                 if ret:
                     self.current_frame += 1
-                    loop_end = self.loop_out if self.loop_out > 0 else self.total_frames
-                    if self.current_frame >= loop_end:
-                        self.current_frame = self.loop_in
-                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.loop_in)
+                    # Check loop bounds using actual timestamp
+                    if self.loop_out > 0:
+                        pos_sec = self.cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                        if pos_sec >= self.loop_out:
+                            self.cap.set(cv2.CAP_PROP_POS_MSEC, self.loop_in * 1000.0)
+                            self.current_frame = int(self.loop_in * self.fps)
+                    elif self.current_frame >= self.total_frames:
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        self.current_frame = 0
 
                     # Send to Syphon
                     if self.frame_callback:
@@ -310,7 +319,7 @@ class VideoPlayer:
             self._updating_slider = False
 
             # Update time label
-            current_time = self.current_frame / self.fps
+            current_time = self.get_current_time()
             self.time_label.config(text=f"{self.format_time(current_time)} / {self.format_time(self.duration)}")
 
             # Schedule next UI update (10 times per second is enough)
@@ -337,6 +346,10 @@ class StructureExporter:
 
         self.in_point = 0
         self.out_point = 0
+        self.markers = []  # List of marker times (seconds) for current segment
+        self.index = self.load_index()
+        self._output_name_edited = False
+        self._auto_output_name = ""
 
         # Write PID file for remote control
         with open(PID_FILE, "w") as f:
@@ -414,9 +427,14 @@ class StructureExporter:
         self.time_label = ttk.Label(main_frame, text="0:00.00 / 0:00.00", font=("Courier", 12))
         self.time_label.pack()
 
+        # Marker bar above slider (shows IN/OUT and markers)
+        self.marker_canvas = tk.Canvas(main_frame, height=16, bg="#2a2a2a", highlightthickness=0)
+        self.marker_canvas.pack(fill=tk.X, pady=(5, 0))
+        self.marker_canvas.bind("<Configure>", lambda e: self.update_marker_bar())
+
         # Slider
         self.slider = ttk.Scale(main_frame, from_=0, to=100, orient=tk.HORIZONTAL, command=self.on_slider)
-        self.slider.pack(fill=tk.X, pady=5)
+        self.slider.pack(fill=tk.X, pady=(0, 5))
 
         # Transport controls
         transport_frame = ttk.Frame(main_frame)
@@ -452,6 +470,17 @@ class StructureExporter:
         self.make_button(points_frame, "Go IN", self.goto_in).pack(side=tk.LEFT, padx=5)
         self.make_button(points_frame, "Go OUT", self.goto_out).pack(side=tk.LEFT, padx=5)
 
+        # Marker controls
+        marker_frame = ttk.Frame(main_frame)
+        marker_frame.pack(fill=tk.X, pady=2)
+
+        self.make_button(marker_frame, "|< Prev", self.prev_marker).pack(side=tk.LEFT, padx=2)
+        self.make_button(marker_frame, "Add Marker [M]", self.add_marker).pack(side=tk.LEFT, padx=5)
+        self.make_button(marker_frame, "Del Marker", self.delete_marker).pack(side=tk.LEFT, padx=2)
+        self.make_button(marker_frame, "Next >|", self.next_marker).pack(side=tk.LEFT, padx=2)
+        self.marker_info_label = ttk.Label(marker_frame, text="", font=("Courier", 10))
+        self.marker_info_label.pack(side=tk.LEFT, padx=10)
+
         # Export options
         export_frame = ttk.LabelFrame(main_frame, text="Export to Structure", padding="10")
         export_frame.pack(fill=tk.X, pady=10)
@@ -471,6 +500,7 @@ class StructureExporter:
         self.output_name_var = tk.StringVar(value="clip_01")
         self.output_entry = ttk.Entry(row2, textvariable=self.output_name_var, width=30)
         self.output_entry.pack(side=tk.LEFT, padx=5)
+        self.output_entry.bind("<Key>", lambda e: self._on_output_name_key())
 
         self.export_btn = tk.Button(row2, text="EXPORT", command=self.export_clip,
                                       font=("Helvetica", 12, "bold"), padx=10, pady=5)
@@ -501,6 +531,10 @@ class StructureExporter:
         self.root.bind("<S>", lambda e: self.take_screenshot())
         self.root.bind("<bracketleft>", lambda e: self.prev_segment())
         self.root.bind("<bracketright>", lambda e: self.next_segment())
+        self.root.bind("<m>", lambda e: self.add_marker())
+        self.root.bind("<M>", lambda e: self.add_marker())
+        self.root.bind("<comma>", lambda e: self.prev_marker())
+        self.root.bind("<period>", lambda e: self.next_marker())
 
     def load_segments(self):
         segments = []
@@ -564,19 +598,32 @@ class StructureExporter:
 
     def load_video(self, path):
         self.current_segment = path
+        self._output_name_edited = False
         self.player.load(path)
-        self.in_point = 0
-        self.out_point = self.player.duration
-        self.player.loop_in = 0
-        self.player.loop_out = 0
+        # Restore IN/OUT from index or default to full range
+        key = self.get_segment_key()
+        if key and key in self.index and "in_point" in self.index[key]:
+            self.in_point = self.index[key]["in_point"]
+            self.out_point = self.index[key]["out_point"]
+        else:
+            self.in_point = 0
+            self.out_point = self.player.duration
+        self.player.loop_in = self.in_point
+        self.player.loop_out = self.out_point if self.out_point < self.player.duration else 0.0
+        self.load_markers_for_segment()
         self.update_point_labels()
         self.status_var.set(f"Loaded: {os.path.basename(path)}")
         self.update_output_name()
+        self.marker_info_label.config(text=f"{len(self.markers)} markers")
         # Update play button to match player state
         if self.player.playing:
             self.play_btn.config(text="PAUSE")
         else:
             self.play_btn.config(text="PLAY")
+
+    def _on_output_name_key(self):
+        """Mark output name as manually edited"""
+        self._output_name_edited = True
 
     def format_time_compact(self, seconds):
         """Format time as m-ss for filenames (no colons)"""
@@ -597,21 +644,6 @@ class StructureExporter:
         if self.player.cap and not self.player._updating_slider:
             frame = int(float(value))
             self.player.seek(frame, scrubbing=True)
-            # Update loop bounds based on scrub position
-            scrub_time = frame / self.player.fps
-            changed = False
-            if scrub_time < self.in_point:
-                self.in_point = scrub_time
-                self.player.loop_in = frame
-                changed = True
-            if scrub_time > self.out_point:
-                # Past OUT: reset to end of video
-                self.out_point = self.player.duration
-                self.player.loop_out = 0
-                changed = True
-            if changed:
-                self.update_point_labels()
-                self.update_output_name()
             # Update play button
             self.play_btn.config(text="PLAY" if not self.player.playing else "PAUSE")
             # Set timer to detect scrub end and restore playback
@@ -629,23 +661,10 @@ class StructureExporter:
         if self.player.cap:
             new_frame = self.player.current_frame + frames
             new_frame = max(0, min(new_frame, self.player.total_frames - 1))
+            self.player._updating_slider = True
             self.slider.set(new_frame)
+            self.player._updating_slider = False
             self.player.seek(new_frame)
-
-            # Expand loop bounds if stepping outside them
-            new_time = new_frame / self.player.fps
-            changed = False
-            if new_time < self.in_point:
-                self.in_point = new_time
-                self.player.loop_in = new_frame
-                changed = True
-            if new_time > self.out_point:
-                self.out_point = new_time
-                self.player.loop_out = new_frame
-                changed = True
-            if changed:
-                self.update_point_labels()
-                self.update_output_name()
 
     def toggle_play(self):
         if self.player.playing:
@@ -665,27 +684,46 @@ class StructureExporter:
 
     def set_in_point(self):
         self.in_point = self.player.get_current_time()
-        self.player.loop_in = int(self.in_point * self.player.fps)
+        self.player.loop_in = self.in_point
+        self.save_in_out_points()
         self.update_point_labels()
         self.update_output_name()
 
     def set_out_point(self):
         self.out_point = self.player.get_current_time()
-        self.player.loop_out = int(self.out_point * self.player.fps)
+        self.player.loop_out = self.out_point
+        self.save_in_out_points()
         self.update_point_labels()
         self.update_output_name()
 
+    def save_in_out_points(self):
+        """Persist IN/OUT points to the index"""
+        key = self.get_segment_key()
+        if not key:
+            return
+        if key not in self.index:
+            self.index[key] = {}
+        self.index[key]["in_point"] = self.in_point
+        self.index[key]["out_point"] = self.out_point
+        self.save_index()
+
     def goto_in(self):
         if self.player.cap:
-            frame = int(self.in_point * self.player.fps)
-            self.slider.set(frame)
-            self.player.seek(frame)
+            self.player.cap.set(cv2.CAP_PROP_POS_MSEC, self.in_point * 1000.0)
+            self.player.current_frame = int(self.player.cap.get(cv2.CAP_PROP_POS_FRAMES))
+            self.player._updating_slider = True
+            self.slider.set(self.player.current_frame)
+            self.player._updating_slider = False
+            self.player.show_frame()
 
     def goto_out(self):
         if self.player.cap:
-            frame = int(self.out_point * self.player.fps)
-            self.slider.set(frame)
-            self.player.seek(frame)
+            self.player.cap.set(cv2.CAP_PROP_POS_MSEC, self.out_point * 1000.0)
+            self.player.current_frame = int(self.player.cap.get(cv2.CAP_PROP_POS_FRAMES))
+            self.player._updating_slider = True
+            self.slider.set(self.player.current_frame)
+            self.player._updating_slider = False
+            self.player.show_frame()
 
     def update_point_labels(self):
         self.in_label.config(text=f"IN: {self.format_time(self.in_point)}")
@@ -702,6 +740,8 @@ class StructureExporter:
             self.duration_label.config(foreground="red")
         else:
             self.duration_label.config(foreground="green")
+
+        self.update_marker_bar()
 
     def format_time(self, seconds):
         m = int(seconds // 60)
@@ -737,7 +777,11 @@ class StructureExporter:
         output_path = os.path.join(OUTPUT_DIR, f"{output_name}.mov")
 
         # Format times for ffmpeg
-        in_time = f"{int(self.in_point//60)}:{self.in_point%60:06.3f}"
+        # Use coarse seek before -i (fast keyframe) + fine seek after -i (frame accurate)
+        coarse_seek = max(0, self.in_point - 5)  # 5s before IN for keyframe margin
+        fine_seek = self.in_point - coarse_seek
+        coarse_time = f"{int(coarse_seek//60)}:{coarse_seek%60:06.3f}"
+        fine_time = f"{fine_seek:06.3f}"
         clip_duration = self.out_point - self.in_point
 
         resolution = "640:480" if res == "640" else "320:240"
@@ -754,8 +798,9 @@ class StructureExporter:
                 eye_w = out_w // 2
                 cmd = [
                     FFMPEG, "-y",
-                    "-ss", in_time,
+                    "-ss", coarse_time,
                     "-i", self.current_segment,
+                    "-ss", fine_time,
                     "-t", str(clip_duration),
                     "-vf", (
                         f"[0:v]split[l][r];"
@@ -849,6 +894,8 @@ class StructureExporter:
         self.sync_btn = tk.Button(bottom, text="SYNC TO SD", command=self.sync_to_sd,
                                    font=("Helvetica", 11, "bold"), padx=8, pady=3)
         self.sync_btn.pack(side=tk.RIGHT)
+
+        self.make_button(bottom, "Refresh", self.refresh_clip_list).pack(side=tk.RIGHT, padx=5)
 
         # Track clip checkboxes: {filename: (BooleanVar, frame_count)}
         self.clip_vars = {}
@@ -965,6 +1012,141 @@ class StructureExporter:
 
         self.status_var.set(f"SD sync: {copied} copied, {removed} removed")
         self.refresh_clip_list()
+
+    # --- Index / Markers ---
+
+    def load_index(self):
+        """Load the persistent index from JSON"""
+        if os.path.exists(INDEX_FILE):
+            try:
+                with open(INDEX_FILE, "r") as f:
+                    return json.load(f)
+            except:
+                pass
+        return {}
+
+    def save_index(self):
+        """Save the persistent index to JSON"""
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        with open(INDEX_FILE, "w") as f:
+            json.dump(self.index, f, indent=2)
+
+    def get_segment_key(self):
+        """Get the index key for the current segment"""
+        if not self.current_segment:
+            return None
+        return os.path.basename(self.current_segment)
+
+    def load_markers_for_segment(self):
+        """Load markers for the current segment from the index"""
+        key = self.get_segment_key()
+        if key and key in self.index:
+            self.markers = sorted(self.index[key].get("markers", []))
+        else:
+            self.markers = []
+        self.update_marker_bar()
+
+    def save_markers_for_segment(self):
+        """Save current markers to the index"""
+        key = self.get_segment_key()
+        if not key:
+            return
+        if key not in self.index:
+            self.index[key] = {}
+        self.index[key]["markers"] = sorted(self.markers)
+        self.save_index()
+
+    def add_marker(self):
+        """Add a marker at the current playback position"""
+        if not self.player.cap:
+            return
+        t = self.player.get_current_time()
+        # Don't add duplicate (within 0.1s)
+        for m in self.markers:
+            if abs(m - t) < 0.1:
+                return
+        self.markers.append(t)
+        self.markers.sort()
+        self.save_markers_for_segment()
+        self.update_marker_bar()
+        idx = self.markers.index(t)
+        self.marker_info_label.config(text=f"Marker {idx+1}/{len(self.markers)} @ {self.format_time(t)}")
+
+    def delete_marker(self):
+        """Delete the nearest marker to the current position"""
+        if not self.markers or not self.player.cap:
+            return
+        t = self.player.get_current_time()
+        nearest = min(self.markers, key=lambda m: abs(m - t))
+        self.markers.remove(nearest)
+        self.save_markers_for_segment()
+        self.update_marker_bar()
+        self.marker_info_label.config(text=f"{len(self.markers)} markers")
+
+    def prev_marker(self):
+        """Jump to the previous marker"""
+        if not self.markers or not self.player.cap:
+            return
+        t = self.player.get_current_time() - 0.05  # Small offset to avoid sticking
+        prev = [m for m in self.markers if m < t]
+        if prev:
+            target = prev[-1]
+        else:
+            target = self.markers[-1]  # Wrap to last
+        frame = int(target * self.player.fps)
+        self.slider.set(frame)
+        self.player.seek(frame)
+        idx = self.markers.index(target)
+        self.marker_info_label.config(text=f"Marker {idx+1}/{len(self.markers)} @ {self.format_time(target)}")
+
+    def next_marker(self):
+        """Jump to the next marker"""
+        if not self.markers or not self.player.cap:
+            return
+        t = self.player.get_current_time() + 0.05
+        nxt = [m for m in self.markers if m > t]
+        if nxt:
+            target = nxt[0]
+        else:
+            target = self.markers[0]  # Wrap to first
+        frame = int(target * self.player.fps)
+        self.slider.set(frame)
+        self.player.seek(frame)
+        idx = self.markers.index(target)
+        self.marker_info_label.config(text=f"Marker {idx+1}/{len(self.markers)} @ {self.format_time(target)}")
+
+    def update_marker_bar(self):
+        """Redraw the marker bar showing IN/OUT range and markers"""
+        c = self.marker_canvas
+        c.delete("all")
+
+        if not self.player.cap or self.player.total_frames <= 0:
+            return
+
+        w = c.winfo_width()
+        if w < 10:
+            w = 780  # Default before first render
+        h = 16
+        total = self.player.duration
+
+        if total <= 0:
+            return
+
+        # Draw IN-OUT range as a colored bar
+        in_x = int((self.in_point / total) * w)
+        out_x = int((self.out_point / total) * w)
+        c.create_rectangle(in_x, 0, out_x, h, fill="#2255aa", outline="")
+
+        # Draw IN marker (green line)
+        c.create_line(in_x, 0, in_x, h, fill="#00ff00", width=2)
+
+        # Draw OUT marker (red line)
+        c.create_line(out_x, 0, out_x, h, fill="#ff0000", width=2)
+
+        # Draw markers (yellow triangles)
+        for m in self.markers:
+            mx = int((m / total) * w)
+            c.create_polygon(mx - 4, h, mx + 4, h, mx, 2, fill="#ffcc00", outline="")
 
     def take_screenshot(self):
         """Capture screenshot of the app window"""
