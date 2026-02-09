@@ -1,8 +1,15 @@
 precision mediump float;
 // stereo_converge : shift convergence plane of half-SBS stereo
+//
 // Horizontally offsets one eye relative to the other to push the
-// perceived depth plane forward or backward. Small shifts have
-// a large perceptual effect.
+// entire perceived depth plane forward or backward. This doesn't
+// change parallax between objects — it shifts where "screen depth"
+// sits. Small shifts have a large perceptual effect.
+//
+// Overlap cropping: the shift creates monocular-only edges (pixels
+// visible to one eye but not the other). The output is cropped to
+// the overlap region and scaled to fill, so both eyes see matching
+// content at all positions.
 //
 // f0 = convergence shift (center = no shift, left = nearer, right = farther)
 varying vec2 tcoord;    // location
@@ -22,16 +29,18 @@ void main(void) {
     vec2 uv = tcoord;
     float shift = f0;
 
-    float sample_x;
-    if (uv.x < 0.5) {
-        // Left eye: shift one direction
-        sample_x = uv.x + shift * 0.5;
-        sample_x = clamp(sample_x, 0.0, 0.5);
-    } else {
-        // Right eye: shift the other direction
-        sample_x = uv.x - shift * 0.5;
-        sample_x = clamp(sample_x, 0.5, 1.0);
-    }
+    // Crop to overlap region and scale to fill.
+    // Margin = max shift so neither eye samples past its half-boundary.
+    float margin = 0.05 * 0.5;  // half of max shift range
 
-    gl_FragColor = texture2D(tex, vec2(sample_x, uv.y));
+    float local_x;
+    if (uv.x < 0.5) {
+        local_x = uv.x * 2.0;  // 0..1 within left eye
+        float base_x = margin + local_x * (0.5 - 2.0 * margin);
+        gl_FragColor = texture2D(tex, vec2(base_x + shift * 0.5, uv.y));
+    } else {
+        local_x = (uv.x - 0.5) * 2.0;  // 0..1 within right eye
+        float base_x = 0.5 + margin + local_x * (0.5 - 2.0 * margin);
+        gl_FragColor = texture2D(tex, vec2(base_x - shift * 0.5, uv.y));
+    }
 }
