@@ -58,7 +58,7 @@ The chain deliberately avoids pillarboxing or letterboxing until the final displ
 - The Elgato captures the full frame at 1920x1080
 - OBS stretches to fill the full 3840x1080 canvas
 
-Pillarboxing only happens at the end, where the display needs correct aspect ratio. An all-HD full-SBS pipeline would eliminate the squeeze/stretch problem entirely. Erogenous Tones has an HD version of Structure on the roadmap, though small-batch Eurorack manufacturing timelines are unpredictable.
+Pillarboxing only happens at the end, where the display needs correct aspect ratio. A full-SBS HD processing chain would eliminate the squeeze/stretch problem entirely. Erogenous Tones promises an HD version of Structure coming "soon" — but given tariffs are making CN manufacturing challenging for small Eurorack businesses (viz LZX/Chromagnon), don't hold your breath.
 
 ### Fullscreen Projector
 
