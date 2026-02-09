@@ -39,3 +39,11 @@ See [glsl/README.md](glsl/README.md) for the shader development workflow.
 Capture Structure's composite SD output via Elgato and display as full SBS stereo on Viture XR glasses using OBS, with simultaneous passthrough to a 3D projector.
 
 See [monitoring/README.md](monitoring/README.md) for signal flow and OBS settings.
+
+## TODO
+
+- [ ] Upload demo clips to Vimeo and link here
+- [ ] Fix monitoring pillarbox aspect ratio (see [monitoring TODO](monitoring/README.md))
+- [ ] Test `stereo_displace` and `stereo_converge` shaders on hardware
+- [ ] Build remaining shader ideas (see [glsl/README.md](glsl/README.md#shader-ideas))
+- [ ] Update [sublingualism.com](https://sublingualism.com) with new stereo synthesis work
