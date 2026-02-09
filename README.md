@@ -1,6 +1,8 @@
-# Structure Exporter - Development Notes
+# Structure Exporter
 
-## Remote Control (NEW)
+GUI application for selecting video ranges from 3D SBS segments and exporting clips to [Erogenous Tones Structure](https://www.erogenous-tones.com/modules/structure/) format (Eurorack video synthesis module).
+
+## Remote Control
 
 The app can be controlled remotely via signals or command file:
 
@@ -38,9 +40,6 @@ echo "step 240" > /tmp/structure_exporter_cmd
 - Timestamped: `/tmp/structure_exporter_HHMMSS.png`
 - Latest: `/tmp/structure_exporter_latest.png`
 - Path file: `/tmp/structure_exporter_screenshot_path.txt`
-
-## Overview
-GUI application for selecting video ranges from 3D SBS segments and exporting clips to Erogenous Tones Structure format.
 
 ## Files
 - `structure_exporter.py` - Main application
@@ -136,6 +135,9 @@ ffmpeg -y -ss "START" -to "END" -i "INPUT" \
 | Left/Right | Step 1 frame |
 | I | Set IN point |
 | O | Set OUT point |
+| M | Add marker |
+| , | Previous marker |
+| . | Next marker |
 | S | Take screenshot |
 | [ | Previous segment |
 | ] | Next segment |
