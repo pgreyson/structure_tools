@@ -24,6 +24,7 @@ import time
 import signal
 import numpy as np
 import json
+import argparse
 import AppKit
 
 # Syphon for video output
@@ -46,13 +47,23 @@ except ImportError:
     AVFOUNDATION_AVAILABLE = False
     print("Note: AVFoundation not available, using OpenCV")
 
-# Configuration
+# Configuration (defaults, overridden by command-line args)
 SEGMENT_DIR = "/Volumes/Workspace/Downloads/3d_rarities_output"
 OUTPUT_DIR = "/Volumes/Workspace/Downloads/3d_rarities_structure"
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 FFPROBE = "/opt/homebrew/bin/ffprobe"
 STRUCTURE_SD = "/Volumes/STRUCT_SD/clips"
 INDEX_FILE = os.path.join(OUTPUT_DIR, "index.json")
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Structure Exporter - export video clips to Erogenous Tones Structure format")
+    parser.add_argument("--input-dir", "-i", default=SEGMENT_DIR,
+                        help=f"Input segments directory (default: {SEGMENT_DIR})")
+    parser.add_argument("--output-dir", "-o", default=OUTPUT_DIR,
+                        help=f"Output clips directory (default: {OUTPUT_DIR})")
+    parser.add_argument("--sd-path", default=STRUCTURE_SD,
+                        help=f"Structure SD clips directory (default: {STRUCTURE_SD})")
+    return parser.parse_args()
 
 # Syphon output: 3840x1080 (side-by-side stereo for Viture glasses)
 SYPHON_WIDTH = 3840
@@ -1259,6 +1270,14 @@ class StructureExporter:
 
 
 def main():
+    global SEGMENT_DIR, OUTPUT_DIR, STRUCTURE_SD, INDEX_FILE
+
+    args = parse_args()
+    SEGMENT_DIR = args.input_dir
+    OUTPUT_DIR = args.output_dir
+    STRUCTURE_SD = args.sd_path
+    INDEX_FILE = os.path.join(OUTPUT_DIR, "index.json")
+
     root = tk.Tk()
 
     # macOS: Use default theme for better native behavior

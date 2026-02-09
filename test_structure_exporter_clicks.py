@@ -19,7 +19,7 @@ except ImportError:
 
 import tkinter as tk
 
-APP_PATH = "/Volumes/Workspace/Downloads/structure_exporter.py"
+APP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "structure_exporter.py")
 SCREENSHOT_PATH = "/tmp/structure_exporter_screenshot.png"
 
 

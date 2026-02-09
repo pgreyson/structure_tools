@@ -8,7 +8,7 @@ The app can be controlled remotely via signals or command file:
 
 ### Quick Helper Script
 ```bash
-/Volumes/Workspace/Downloads/se <command>
+./se <command>
 ```
 
 Commands:
@@ -48,16 +48,16 @@ echo "step 240" > /tmp/structure_exporter_cmd
 
 ## Running the App
 ```bash
-python3 /Volumes/Workspace/Downloads/structure_exporter.py &
+python3 structure_exporter.py &
 ```
 
 ## Running Tests
 ```bash
 # Backend tests
-python3 /Volumes/Workspace/Downloads/test_structure_exporter.py
+python3 test_structure_exporter.py
 
 # UI tests
-python3 /Volumes/Workspace/Downloads/test_structure_exporter_ui.py
+python3 test_structure_exporter_ui.py
 ```
 
 ## Screenshot & UI Verification
@@ -145,7 +145,7 @@ ffmpeg -y -ss "START" -to "END" -i "INPUT" \
 ## Development Workflow
 1. Make code changes
 2. Kill existing app: `pkill -f "python3.*structure_exporter.py"`
-3. Launch app: `python3 /Volumes/Workspace/Downloads/structure_exporter.py &`
+3. Launch app: `python3 structure_exporter.py &`
 4. Press S in app to screenshot
 5. Open screenshot: `open /tmp/structure_exporter_screenshot.png`
 6. Verify UI visually

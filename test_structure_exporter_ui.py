@@ -11,12 +11,12 @@ from unittest.mock import Mock, patch
 import tempfile
 
 # Add the directory to path so we can import the app
-sys.path.insert(0, "/Volumes/Workspace/Downloads")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dataclasses import dataclass
 from typing import List, Optional
 
-SEGMENT_DIR = "/Volumes/Workspace/Downloads/3d_rarities_output"
+from structure_exporter import SEGMENT_DIR
 
 
 @dataclass

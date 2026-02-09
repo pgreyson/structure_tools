@@ -38,7 +38,7 @@ case "$cmd" in
     restart|r)
         pkill -f "python3.*structure_exporter.py"
         sleep 0.5
-        python3 /Volumes/Workspace/Downloads/structure_exporter.py &
+        python3 "$(dirname "$0")/structure_exporter.py" &
         sleep 2
         echo "Restarted. PID: $(cat $PID_FILE)"
         ;;

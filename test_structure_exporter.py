@@ -13,15 +13,13 @@ import shutil
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 
-# Configuration - match the main app
-SEGMENT_DIR = "/Volumes/Workspace/Downloads/3d_rarities_output"
-OUTPUT_DIR = "/Volumes/Workspace/Downloads/3d_rarities_structure"
-FFMPEG = "/opt/homebrew/bin/ffmpeg"
-FFPROBE = "/opt/homebrew/bin/ffprobe"
-STRUCTURE_SD = "/Volumes/STRUCT_SD/clips"
+# Configuration - import from main app
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _script_dir)
+from structure_exporter import SEGMENT_DIR, OUTPUT_DIR, FFMPEG, FFPROBE, STRUCTURE_SD
 
 # Test output directory
-TEST_OUTPUT_DIR = "/Volumes/Workspace/Downloads/structure_test_output"
+TEST_OUTPUT_DIR = os.path.join(os.path.dirname(OUTPUT_DIR), "structure_test_output")
 
 
 @dataclass
