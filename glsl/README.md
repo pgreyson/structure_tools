@@ -124,13 +124,13 @@ uniform vec4 fparams;   // 4 floats coming in (CV-controllable)
 uniform ivec4 iparams;  // 4 ints coming in
 uniform float ftime;    // 0.0 to 1.0 (ramp)
 uniform int itime;      // increases when ftime hits 1.0
-//f0::label     <- parameter name shown in Structure UI
-//f1::label
-//f2::label
+//f0:label:     <- parameter name shown in Structure UI
+//f1:label:
+//f2:label:
 float f0 = mix(0.05, 0.95, fparams[0]);  // remap to usable range
 ```
 
-The `//f0::label` comments name the CV-controllable parameters in Structure's interface. Parameters arrive as 0.0-1.0 via `fparams[]` and are typically remapped with `mix()`.
+The `//f0:label:` comments name the CV-controllable parameters in Structure's interface — the label goes *between* the two colons. Parameters arrive as 0.0-1.0 via `fparams[]` and are typically remapped with `mix()`.
 
 ### Browsing Example Shaders
 

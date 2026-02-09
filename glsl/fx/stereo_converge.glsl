@@ -13,7 +13,7 @@ uniform vec4 fparams;   // 4 floats coming in
 uniform ivec4 iparams;  // 4 ints coming in
 uniform float ftime;    // 0.0 to 1.0
 uniform int itime;      // increases when ftime hits 1.0
-//f0::converge
+//f0:converge:
 //f1::
 //f2::
 float f0 = mix(-0.05, 0.05, fparams[0]);  // +/- 5% of eye width

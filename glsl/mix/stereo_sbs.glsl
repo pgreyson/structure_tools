@@ -15,7 +15,7 @@ uniform vec4 fparams;   // 4 floats coming in
 uniform ivec4 iparams;  // 4 ints coming in
 uniform float ftime;    // 0.0 to 1.0
 uniform int itime;      // increases when ftime hits 1.0
-//f0::blend
+//f0:blend:
 //f1::
 //f2::
 float f0 = fparams[0];  // 0=hard split, 1=crossfade at seam

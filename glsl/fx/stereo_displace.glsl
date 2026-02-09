@@ -1,8 +1,25 @@
 precision mediump float;
 // stereo_displace : create stereo depth from monocular input
+//
 // Takes a flat (monocular) video synthesis input and produces half-SBS
 // stereo by displacing pixels horizontally based on color/luminance.
-// Same principle as ChromaDepth glasses but rendered digitally.
+// Same principle as ChromaDepth glasses but rendered digitally:
+// color or brightness is mapped to depth, then each pixel is shifted
+// in opposite horizontal directions for L/R eyes. The displacement
+// between eyes IS parallax — your brain reads it as depth.
+//
+// How it works:
+//   1. Map output UV to a base position in the mono source frame.
+//      Both eyes share the same base_x so depth is read consistently.
+//   2. Sample color at base_x and derive a depth value (0-1).
+//   3. Shift base_x by +displacement for left eye, -displacement
+//      for right eye. The shift magnitude scales with depth.
+//
+// Overlap cropping:
+//   Displacement creates monocular-only edges — pixels visible to
+//   one eye but not the other. To avoid this, the base coordinate
+//   is restricted to [margin, 1-margin] where margin = max_disp/2.
+//   This crops to the region visible to both eyes and scales to fill.
 //
 // f0 = displacement amount (depth intensity)
 // f1 = depth mode: left = luminance, right = chromadepth (hue)
@@ -15,9 +32,9 @@ uniform vec4 fparams;   // 4 floats coming in
 uniform ivec4 iparams;  // 4 ints coming in
 uniform float ftime;    // 0.0 to 1.0
 uniform int itime;      // increases when ftime hits 1.0
-//f0::depth
-//f1::mode
-//f2::invert
+//f0:depth:
+//f1:mode:
+//f2:invert:
 float f0 = mix(0.0, 0.08, fparams[0]);   // max ~8% of frame width displacement
 float f1 = fparams[1];                     // 0=luminance, 1=chromadepth
 float f2 = fparams[2];                     // 0=normal, 1=inverted
@@ -41,9 +58,20 @@ float rgb2hue(vec3 c) {
 void main(void) {
     vec2 uv = tcoord;
 
-    // The input is monocular — sample from the full frame
-    // to determine depth at this position
-    vec3 color = texture2D(tex, uv).rgb;
+    // Compute base source coordinate in the mono input frame.
+    // Both eyes map to the same base position so depth is consistent.
+    // Crop to overlap region (margin = max displacement) and scale to fill.
+    float margin = f0 * 0.5;
+    float local_x;
+    if (uv.x < 0.5) {
+        local_x = uv.x * 2.0;
+    } else {
+        local_x = (uv.x - 0.5) * 2.0;
+    }
+    float base_x = margin + local_x * (1.0 - 2.0 * margin);
+
+    // Sample depth from the base position in the mono source
+    vec3 color = texture2D(tex, vec2(base_x, uv.y)).rgb;
 
     // Compute depth value (0.0 to 1.0)
     float depth;
@@ -52,30 +80,22 @@ void main(void) {
         depth = dot(color, vec3(0.299, 0.587, 0.114));
     } else {
         // ChromaDepth mode: hue along spectrum = depth
-        // Red (hue 0) = near, violet (hue ~0.75) = far
         float hue = rgb2hue(color);
-        // Map red→near (1.0), through spectrum, to violet→far (0.0)
         depth = 1.0 - hue;
     }
 
     // Invert if requested
     if (f2 > 0.5) depth = 1.0 - depth;
 
-    // Compute displacement for this pixel
+    // Displace in opposite directions per eye
     float displacement = (depth - 0.5) * f0;
-
-    // Output half-SBS: left eye in left half, right eye in right half
     float source_x;
     if (uv.x < 0.5) {
-        // Left eye: sample shifted left
-        source_x = uv.x * 2.0 + displacement;
+        source_x = base_x + displacement;
     } else {
-        // Right eye: sample shifted right
-        source_x = (uv.x - 0.5) * 2.0 - displacement;
+        source_x = base_x - displacement;
     }
 
-    // Clamp to valid range
     source_x = clamp(source_x, 0.0, 1.0);
-
     gl_FragColor = texture2D(tex, vec2(source_x, uv.y));
 }
