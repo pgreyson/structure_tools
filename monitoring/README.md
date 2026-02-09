@@ -50,6 +50,16 @@ Right-click source → Edit Transform:
 
 > **TODO:** The image is currently horizontally stretched on the Viture display. Structure outputs 4:3 SD composite, but the Elgato captures it as 1920x1080 (16:9), stretching the 4:3 content. "Stretch to bounds" then doubles the width for full SBS, compounding the distortion. Need to pillarbox each eye to maintain 4:3 aspect ratio within each 1920x1080 panel (black bars on sides).
 
+## Design Philosophy: Maximize Signal at Each Stage
+
+The chain deliberately avoids pillarboxing or letterboxing until the final display stage. At every intermediate step, the full frame is used — content is squeezed or stretched to fill the available resolution rather than wasting pixels on black bars. This preserves as much signal as possible through each conversion:
+
+- Structure packs both eyes into the full 4:3 SD frame (half-SBS)
+- The Elgato captures the full frame at 1920x1080
+- OBS stretches to fill the full 3840x1080 canvas
+
+Pillarboxing only happens at the end, where the display needs correct aspect ratio. An all-HD full-SBS pipeline would eliminate the squeeze/stretch problem entirely. Erogenous Tones has an HD version of Structure on the roadmap, though small-batch Eurorack manufacturing timelines are unpredictable.
+
 ### Fullscreen Projector
 
 Right-click the OBS Preview → Fullscreen Projector → Viture display (monitor 1).
