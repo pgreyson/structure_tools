@@ -23,6 +23,51 @@ Centered zoom on left and right sides of a side-by-side stereo image. Each eye i
 
 - **f0**: zoom level (center = no zoom, right = zoom in, left = zoom out)
 
+## Stereo-Aware Shader Design
+
+All input clips are half-SBS (left eye in left half, right eye in right half of the frame). A stereo-aware shader detects which half it's in and applies the effect per-eye — see `stereo_zoom.glsl` for the pattern.
+
+The current node chain is: `CLIP → FBK → EFX1 → EFX2 → OUT`
+
+### What Works in Stereo
+
+**Stereo-preserving** (safe — identical per-pixel operation on both eyes):
+- Continuous color effects: hue rotation, saturation, contrast, color curves. These don't touch spatial information at all, so parallax is perfectly preserved.
+- Pixelation/mosaic: as long as both eyes get the same grid, depth is maintained.
+- Edge detection/enhancement: operates on local neighborhoods, preserves relative positions.
+- Feedback: already in the chain (`FBK` node). Feeds the output back into itself, creating trails and echoes that inherit the stereo depth of the source.
+
+**Stereo-bending** (violates parallax but creates interesting sculptural effects):
+- `stereo_zoom` (current): zooms each eye to its own center. Breaks parallax but gives the image a physical, embossed quality.
+- Rotation: weird but sometimes works. The depth plane tilts rather than breaks.
+- Wave/displacement: sinusoidal warping applied identically to each eye's local coordinates. The distortion is coherent between eyes, so the brain interprets it as a warped surface rather than a broken image.
+- Mirror/kaleidoscope: horizontal mirror within each eye creates symmetry while depth persists at the seam.
+
+**Stereo-specific** (effects that exist because of stereo):
+- Convergence shift: horizontally offset one eye relative to the other to push the perceived depth plane forward or backward. A small shift is a powerful depth control.
+- Per-eye color: different color treatment per eye (e.g. desaturate one eye, tint each differently). Creates an anaglyph-like quality in SBS, and the visual system tries to reconcile the difference, producing a shimmer.
+
+### Shader Ideas
+
+| Shader | Type | Category | Description |
+|--------|------|----------|-------------|
+| `stereo_zoom` | stereo-bending | fx | **Exists.** Per-eye centered zoom |
+| `stereo_hue` | preserving | fx | Continuous hue rotation, CV-controlled. Safe for stereo. |
+| `stereo_edge` | preserving | fx | Sobel edge detection per-eye. Turns depth into wireframe. |
+| `stereo_converge` | stereo-specific | fx | Horizontal offset between eyes — CV-controllable depth plane |
+| `stereo_tint` | stereo-specific | fx | Different hue/saturation per eye. Anaglyph shimmer. |
+| `stereo_wave` | stereo-bending | fx | Sinusoidal displacement per-eye. Warped depth surface. |
+| `stereo_mirror` | stereo-bending | fx | Horizontal mirror within each eye. Symmetric depth. |
+| `stereo_pixelate` | preserving | fx | Mosaic with matched grids per eye |
+
+### Stereo Generators
+
+Generating stereoscopic content from scratch is harder. A generator shader outputs one frame, so it would need to render the scene from two viewpoints — left eye in the left half, right eye in the right half — within a single shader call.
+
+For simple procedural geometry (planes, spheres, grids), this is possible: offset the camera x-position by an eye separation amount and render each half. But Structure's GLES 2.0 constraints mean ray marching is generally too slow, limiting this to simple SDF scenes or flat geometry with parallax displacement.
+
+An alternative is to use two `gen` nodes in the Structure patch, each rendering one eye with a slight camera offset, then compositing them into half-SBS with a `mix` node. This is more flexible but uses more of the node chain.
+
 ## Deploying to Structure
 
 Copy shaders to the SD card:
