@@ -32,17 +32,21 @@ Profile: `structure->elegato->viture_half_to_full_sbs`
 
 The 3840x1080 canvas matches the Viture glasses' full side-by-side stereo format.
 
-### Scene Source
+### Scene Source Transform
+
+Source: **Video Capture Device** (`macos-avcapture`) → Elgato 4K S
+
+Right-click source → Edit Transform:
 
 | Setting | Value |
 |---------|-------|
-| Source type | Video Capture Device (`macos-avcapture`) |
-| Device | Elgato 4K S |
-| Transform Scale | 2.0 x 1.0 |
-| Bounds | 3840x1080 |
-| Bounding Box Type | Scale to inner bounds |
+| Size | 3840x1080 |
+| Bounding Box Type | **Stretch to bounds** |
+| Bounding Box Size | 3840x1080 |
+| Positional Alignment | Top Left |
+| Position | 0, 0 |
 
-The **2.0 x 1.0 scale** is the key setting: it stretches the half-SBS capture (both eyes squeezed into 1920x1080) horizontally to fill the 3840x1080 canvas, producing full SBS where each eye gets its own 1920x1080 panel.
+**Stretch to bounds** is the key setting. The Elgato captures 1920x1080 (half-SBS with both eyes squeezed in). Stretching to the 3840x1080 bounding box doubles the width, unsqueezing each eye into its own full 1920x1080 panel for the Viture glasses.
 
 ### Fullscreen Projector
 
