@@ -37,6 +37,12 @@ Shifts the convergence plane of half-SBS stereo by horizontally offsetting one e
 
 - **f0**: converge — center = no shift, left = nearer, right = farther
 
+### mix/stereo_sbs.glsl
+
+Side-by-side compositor for stereo generation. Puts input 1 (left eye) in the left half and input 2 (right eye) in the right half, producing half-SBS output. Use with a nodeset that routes two generators to a single mix node (e.g. `GEN1 → MIX1 ← GEN2`).
+
+- **f0**: blend — hard split (left) vs crossfade at seam (right)
+
 ## Stereo-Aware Shader Design
 
 All input clips are half-SBS (left eye in left half, right eye in right half of the frame). A stereo-aware shader detects which half it's in and applies the effect per-eye — see `stereo_zoom.glsl` for the pattern.
@@ -88,7 +94,9 @@ Generating stereoscopic content from scratch is harder. A generator shader outpu
 
 For simple procedural geometry (planes, spheres, grids), this is possible: offset the camera x-position by an eye separation amount and render each half. But Structure's GLES 2.0 constraints mean ray marching is generally too slow, limiting this to simple SDF scenes or flat geometry with parallax displacement.
 
-An alternative is to use two `gen` nodes in the Structure patch, each rendering one eye with a slight camera offset, then compositing them into half-SBS with a `mix` node. This is more flexible but uses more of the node chain.
+An alternative is to use two `gen` nodes in the Structure patch, each rendering one eye with a slight camera offset, then compositing them into half-SBS with a `mix` node. The [MIX node](https://erogenous-tones.com/structure-sd-user-guide/node-mix1.html) receives two inputs (`tex` and `tex2`) from different upstream nodes, so a nodeset like `GEN1 → MIX1 ← GEN2` routes each generator to a separate mix input. The stock mix shaders are all blends/keys/crossfades — `mix/stereo_sbs.glsl` is a simple SBS compositor that puts input 1 in the left half and input 2 in the right half, producing half-SBS output. The two generators would run the same shader with a slight camera x-offset between them.
+
+Structure has 140+ nodesets (as of firmware 4.2). Filter for nodesets containing both GEN1 and MIX1 (or GEN1, GEN2, and MIX1) on the NODE SET page to find compatible chains.
 
 ## Deploying to Structure
 
