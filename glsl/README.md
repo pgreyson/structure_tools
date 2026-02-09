@@ -23,6 +23,20 @@ Centered zoom on left and right sides of a side-by-side stereo image. Each eye i
 
 - **f0**: zoom level (center = no zoom, right = zoom in, left = zoom out)
 
+### fx/stereo_displace.glsl
+
+Creates stereo depth from monocular video synthesis input. Clones the input to both eyes and displaces pixels horizontally based on color, producing half-SBS output. Same principle as [ChromaDepth® glasses](https://3dstereo.com/collections/3d-depth-glasses) but rendered digitally for SBS displays.
+
+- **f0**: depth — displacement intensity
+- **f1**: mode — luminance (left) or chromadepth/hue (right)
+- **f2**: invert — bright/red near (left) or bright/red far (right)
+
+### fx/stereo_converge.glsl
+
+Shifts the convergence plane of half-SBS stereo by horizontally offsetting one eye relative to the other. Small shifts have a large perceptual effect — pushes the entire depth plane nearer or farther.
+
+- **f0**: converge — center = no shift, left = nearer, right = farther
+
 ## Stereo-Aware Shader Design
 
 All input clips are half-SBS (left eye in left half, right eye in right half of the frame). A stereo-aware shader detects which half it's in and applies the effect per-eye — see `stereo_zoom.glsl` for the pattern.
@@ -48,7 +62,11 @@ The current node chain is: `CLIP → FBK → EFX1 → EFX2 → OUT`
 - Per-eye color: different color treatment per eye (e.g. desaturate one eye, tint each differently). Creates an anaglyph-like quality in SBS, and the visual system tries to reconcile the difference, producing a shimmer.
 
 **Mono-to-stereo** (create depth from flat video synthesis):
-- Displacement stereogram: take a mono input, clone it to both eye halves, and horizontally displace pixels in opposite directions based on luminance or a color channel. Bright pixels shift left in one eye, right in the other (or vice versa), creating parallax from color. Video synthesis gradients become depth ramps — smooth color transitions produce smooth surfaces, hard edges become depth discontinuities. This works entirely within a single fx shader (mono input, half-SBS output) and is especially powerful with the kind of gradients and color fields that video synthesis naturally produces.
+- Displacement stereogram: take a monocular input, clone it to both eye halves, and horizontally displace pixels in opposite directions based on luminance or a color channel. The displacement between eyes IS parallax — your brain interprets it as depth. Video synthesis gradients become depth ramps — smooth color transitions produce smooth surfaces, hard edges become depth discontinuities. This works entirely within a single fx shader (mono input, half-SBS output) and is especially powerful with the kind of gradients and color fields that video synthesis naturally produces.
+- This is the same principle as [ChromaDepth® glasses](https://3dstereo.com/collections/3d-depth-glasses), which use diffractive optics to physically refract red wavelengths more than blue — red arrives at each eye at a different horizontal position, so color literally becomes depth in the optics. Our shader does the same thing digitally: map color to displacement and render into half-SBS. Two depth modes:
+  - **Luminance**: brightness = depth. Good for any video synthesis with contrast.
+  - **ChromaDepth**: hue mapped along the spectrum (red = near, violet = far). Matches the optical glasses but rendered for SBS displays.
+- Reference: [Depth3D/SuperDepth3D](https://github.com/BlueSkyDefender/Depth3D) (ReShade shader using depth buffer displacement), [NVIDIA GPU Gems: Real-Time Stereograms](https://developer.nvidia.com/gpugems/gpugems/part-vi-beyond-triangles/chapter-41-real-time-stereograms) (the math behind DIBR).
 
 ### Shader Ideas
 
@@ -57,10 +75,10 @@ The current node chain is: `CLIP → FBK → EFX1 → EFX2 → OUT`
 | `stereo_zoom` | stereo-bending | fx | **Exists.** Per-eye centered zoom |
 | `stereo_hue` | preserving | fx | Continuous hue rotation, CV-controlled. Safe for stereo. |
 | `stereo_edge` | preserving | fx | Sobel edge detection per-eye. Turns depth into wireframe. |
-| `stereo_converge` | stereo-specific | fx | Horizontal offset between eyes — CV-controllable depth plane |
+| `stereo_converge` | stereo-specific | fx | **Exists.** Horizontal offset between eyes — CV-controllable depth plane |
 | `stereo_tint` | stereo-specific | fx | Different hue/saturation per eye. Anaglyph shimmer. |
 | `stereo_wave` | stereo-bending | fx | Sinusoidal displacement per-eye. Warped depth surface. |
-| `stereo_displace` | mono-to-stereo | fx | Clone mono input to L/R, displace by luminance. Depth from color. |
+| `stereo_displace` | mono-to-stereo | fx | **Exists.** Clone input to L/R, displace by luminance or hue. Depth from color. |
 | `stereo_mirror` | stereo-bending | fx | Horizontal mirror within each eye. Symmetric depth. |
 | `stereo_pixelate` | preserving | fx | Mosaic with matched grids per eye |
 
