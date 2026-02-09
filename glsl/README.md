@@ -47,6 +47,9 @@ The current node chain is: `CLIP → FBK → EFX1 → EFX2 → OUT`
 - Convergence shift: horizontally offset one eye relative to the other to push the perceived depth plane forward or backward. A small shift is a powerful depth control.
 - Per-eye color: different color treatment per eye (e.g. desaturate one eye, tint each differently). Creates an anaglyph-like quality in SBS, and the visual system tries to reconcile the difference, producing a shimmer.
 
+**Mono-to-stereo** (create depth from flat video synthesis):
+- Displacement stereogram: take a mono input, clone it to both eye halves, and horizontally displace pixels in opposite directions based on luminance or a color channel. Bright pixels shift left in one eye, right in the other (or vice versa), creating parallax from color. Video synthesis gradients become depth ramps — smooth color transitions produce smooth surfaces, hard edges become depth discontinuities. This works entirely within a single fx shader (mono input, half-SBS output) and is especially powerful with the kind of gradients and color fields that video synthesis naturally produces.
+
 ### Shader Ideas
 
 | Shader | Type | Category | Description |
@@ -57,6 +60,7 @@ The current node chain is: `CLIP → FBK → EFX1 → EFX2 → OUT`
 | `stereo_converge` | stereo-specific | fx | Horizontal offset between eyes — CV-controllable depth plane |
 | `stereo_tint` | stereo-specific | fx | Different hue/saturation per eye. Anaglyph shimmer. |
 | `stereo_wave` | stereo-bending | fx | Sinusoidal displacement per-eye. Warped depth surface. |
+| `stereo_displace` | mono-to-stereo | fx | Clone mono input to L/R, displace by luminance. Depth from color. |
 | `stereo_mirror` | stereo-bending | fx | Horizontal mirror within each eye. Symmetric depth. |
 | `stereo_pixelate` | preserving | fx | Mosaic with matched grids per eye |
 
