@@ -14,16 +14,19 @@ precision mediump float;
 //   2. Sample color at base_x and derive a depth value (0-1).
 //   3. Shift base_x by +displacement for left eye, -displacement
 //      for right eye. The shift magnitude scales with depth.
+//   4. Apply convergence shift — a uniform offset that pushes the
+//      entire depth plane nearer or farther without changing the
+//      parallax between objects.
 //
 // Overlap cropping:
-//   Displacement creates monocular-only edges — pixels visible to
-//   one eye but not the other. To avoid this, the base coordinate
-//   is restricted to [margin, 1-margin] where margin = max_disp/2.
+//   Both displacement and convergence create monocular-only edges.
+//   The base coordinate is restricted to [margin, 1-margin] where
+//   margin accounts for max displacement + current convergence.
 //   This crops to the region visible to both eyes and scales to fill.
 //
-// f0 = displacement amount (depth intensity)
-// f1 = depth mode: left = luminance, right = chromadepth (hue)
-// f2 = depth invert: left = bright/red near, right = bright/red far
+// f0 = depth — displacement intensity
+// f1 = mode — luminance (left) or chromadepth/hue (right)
+// f2 = converge — center = no shift, left = nearer, right = farther
 varying vec2 tcoord;    // location
 uniform sampler2D tex;  // texture one
 uniform sampler2D tex2; // texture two
@@ -34,10 +37,10 @@ uniform float ftime;    // 0.0 to 1.0
 uniform int itime;      // increases when ftime hits 1.0
 //f0:depth:
 //f1:mode:
-//f2:invert:
+//f2:converge:
 float f0 = mix(0.0, 0.08, fparams[0]);   // max ~8% of frame width displacement
 float f1 = fparams[1];                     // 0=luminance, 1=chromadepth
-float f2 = fparams[2];                     // 0=normal, 1=inverted
+float f2 = mix(-0.03, 0.03, fparams[2]);  // convergence shift
 
 // Convert RGB to hue (0.0 to 1.0)
 float rgb2hue(vec3 c) {
@@ -58,10 +61,10 @@ float rgb2hue(vec3 c) {
 void main(void) {
     vec2 uv = tcoord;
 
-    // Compute base source coordinate in the mono input frame.
-    // Both eyes map to the same base position so depth is consistent.
-    // Crop to overlap region (margin = max displacement) and scale to fill.
-    float margin = f0 * 0.5;
+    // Margin accounts for max displacement + convergence shift
+    float margin = f0 * 0.5 + abs(f2);
+
+    // Map output UV to base position in mono source frame
     float local_x;
     if (uv.x < 0.5) {
         local_x = uv.x * 2.0;
@@ -76,24 +79,19 @@ void main(void) {
     // Compute depth value (0.0 to 1.0)
     float depth;
     if (f1 < 0.5) {
-        // Luminance mode: brightness = depth
         depth = dot(color, vec3(0.299, 0.587, 0.114));
     } else {
-        // ChromaDepth mode: hue along spectrum = depth
         float hue = rgb2hue(color);
         depth = 1.0 - hue;
     }
 
-    // Invert if requested
-    if (f2 > 0.5) depth = 1.0 - depth;
-
-    // Displace in opposite directions per eye
+    // Displace + converge in opposite directions per eye
     float displacement = (depth - 0.5) * f0;
     float source_x;
     if (uv.x < 0.5) {
-        source_x = base_x + displacement;
+        source_x = base_x + displacement + f2;
     } else {
-        source_x = base_x - displacement;
+        source_x = base_x - displacement - f2;
     }
 
     source_x = clamp(source_x, 0.0, 1.0);

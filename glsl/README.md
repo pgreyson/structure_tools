@@ -15,29 +15,48 @@ Structure organizes shaders by type:
 | `wipe/`   | Wipe transitions |
 | ... | See SD card for full list |
 
+## Naming Convention
+
+All custom shaders are prefixed `0_` so they sort to the top of Structure's shader list. Structure ignores files starting with `_` (frag not found), so use a numeric prefix instead.
+
 ## Shaders
 
-### fx/stereo_zoom.glsl
+### fx/0_stereo_zoom.glsl
 
 Centered zoom on left and right sides of a side-by-side stereo image. Each eye is zoomed independently around its own center, with black fill outside bounds.
 
 - **f0**: zoom level (center = no zoom, right = zoom in, left = zoom out)
 
-### fx/stereo_displace.glsl
+### fx/0_stereo_displace.glsl
 
-Creates stereo depth from monocular video synthesis input. Clones the input to both eyes and displaces pixels horizontally based on color, producing half-SBS output. Same principle as [ChromaDepth® glasses](https://3dstereo.com/collections/3d-depth-glasses) but rendered digitally for SBS displays.
+Creates stereo depth from monocular video synthesis input. Clones the input to both eyes and displaces pixels horizontally based on color, producing half-SBS output. Same principle as [ChromaDepth® glasses](https://3dstereo.com/collections/3d-depth-glasses) but rendered digitally for SBS displays. Includes overlap cropping (both eyes see only the region where valid data exists for both) and built-in convergence control.
 
 - **f0**: depth — displacement intensity
 - **f1**: mode — luminance (left) or chromadepth/hue (right)
-- **f2**: invert — bright/red near (left) or bright/red far (right)
+- **f2**: converge — center = no shift, left = nearer, right = farther
 
-### fx/stereo_converge.glsl
+**Blur variants** — same shader with a 3-tap depth blur to smooth aliasing at depth discontinuities (hard color edges in the source become jagged displacement jumps). The blur smooths the depth map before displacement, reducing stairstepping. Two widths available:
 
-Shifts the convergence plane of half-SBS stereo by horizontally offsetting one eye relative to the other. Small shifts have a large perceptual effect — pushes the entire depth plane nearer or farther.
+- **fx/0_stereo_displace_b.glsl** — narrow blur (1px tap spacing, ~3px kernel). Subtle smoothing, removes fine aliasing.
+- **fx/0_stereo_displace_bw.glsl** — wide blur (4px tap spacing, ~8px kernel). More aggressive smoothing for patches with strong depth edges.
+
+The blur variants use luma-only depth (ignoring the mode parameter) to stay within Structure's GLES 2.0 compilation limits — a 5-tap blur with the hue function failed to compile.
+
+### fx/0_stereo_converge.glsl
+
+Shifts the convergence plane of half-SBS stereo by horizontally offsetting one eye relative to the other. Small shifts have a large perceptual effect — pushes the entire depth plane nearer or farther. Works on any half-SBS source (clips, stereo_displace output, generators). Note: stereo_displace has convergence built in on f2 — this standalone version is for when displace isn't in the chain.
 
 - **f0**: converge — center = no shift, left = nearer, right = farther
 
-### mix/stereo_sbs.glsl
+### gen/0_stereo_rects_L.glsl + gen/0_stereo_rects_R.glsl
+
+Paired stereoscopic generators — colored rectangles at different z-depths, drifting and rotating. Load L on GEN1, R on GEN2, route through `0_stereo_sbs` on MIX1 (`GEN1 → MIX1 ← GEN2`). The only difference between L and R is the sign of the eye offset constant. Both generators must have matching parameter values.
+
+- **f0**: speed — animation rate
+- **f1**: spread — stereo depth (eye separation)
+- **f2**: hue — color rotation
+
+### mix/0_stereo_sbs.glsl
 
 Side-by-side compositor for stereo generation. Puts input 1 (left eye) in the left half and input 2 (right eye) in the right half, producing half-SBS output. Use with a nodeset that routes two generators to a single mix node (e.g. `GEN1 → MIX1 ← GEN2`).
 
