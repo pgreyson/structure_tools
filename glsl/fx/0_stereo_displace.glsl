@@ -87,11 +87,12 @@ void main(void) {
     // Compute depth value (0.0 to 1.0)
     float depth;
     if (f2 < 0.5) {
-        // Luminance mode: brightness = depth
-        depth = dot(color, vec3(0.299, 0.587, 0.114));
+        // Luminance mode: f2 0.0-0.5 rotates which brightness = near
+        float luma = dot(color, vec3(0.299, 0.587, 0.114));
+        float offset = f2 * 2.0;
+        depth = fract(luma + offset);
     } else {
-        // ChromaDepth mode: hue along spectrum = depth
-        // f2 0.5-1.0 rotates which color comes forward
+        // ChromaDepth mode: f2 0.5-1.0 rotates which color = near
         float hue = rgb2hue(color);
         float offset = (f2 - 0.5) * 2.0;
         depth = 1.0 - fract(hue + offset);

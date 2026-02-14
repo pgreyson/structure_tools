@@ -59,9 +59,10 @@ void main(void) {
     // Depth per tap
     float dL, dC, dR;
     if (f2 < 0.5) {
-        dL = dot(cL, vec3(0.299, 0.587, 0.114));
-        dC = dot(cC, vec3(0.299, 0.587, 0.114));
-        dR = dot(cR, vec3(0.299, 0.587, 0.114));
+        float offset = f2 * 2.0;
+        dL = fract(dot(cL, vec3(0.299, 0.587, 0.114)) + offset);
+        dC = fract(dot(cC, vec3(0.299, 0.587, 0.114)) + offset);
+        dR = fract(dot(cR, vec3(0.299, 0.587, 0.114)) + offset);
     } else {
         float offset = (f2 - 0.5) * 2.0;
         dL = 1.0 - fract(rgb2hue(cL) + offset);
