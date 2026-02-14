@@ -91,9 +91,10 @@ void main(void) {
         depth = dot(color, vec3(0.299, 0.587, 0.114));
     } else {
         // ChromaDepth mode: hue along spectrum = depth
-        // Red (hue 0) = near, through spectrum, to violet = far
+        // f2 0.5-1.0 rotates which color comes forward
         float hue = rgb2hue(color);
-        depth = 1.0 - hue;
+        float offset = (f2 - 0.5) * 2.0;
+        depth = 1.0 - fract(hue + offset);
     }
 
     // Expand depth contrast — push values away from midpoint

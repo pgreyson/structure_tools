@@ -63,9 +63,10 @@ void main(void) {
         dC = dot(cC, vec3(0.299, 0.587, 0.114));
         dR = dot(cR, vec3(0.299, 0.587, 0.114));
     } else {
-        dL = 1.0 - rgb2hue(cL);
-        dC = 1.0 - rgb2hue(cC);
-        dR = 1.0 - rgb2hue(cR);
+        float offset = (f2 - 0.5) * 2.0;
+        dL = 1.0 - fract(rgb2hue(cL) + offset);
+        dC = 1.0 - fract(rgb2hue(cC) + offset);
+        dR = 1.0 - fract(rgb2hue(cR) + offset);
     }
 
     // Weighted average (1,2,1)/4
